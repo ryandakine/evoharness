@@ -14,7 +14,7 @@ are definitely rough edges. That's the demo so far, not a benchmark.
 - A LiteLLM backend, so you can use different model APIs or a compatible local endpoint.
 - Offline examples, baseline helpers, and train/validation/test splitting.
 
-The package is still called evoharness in Python.
+The package is called evoharness in Python.
 
 ## Try it
 
