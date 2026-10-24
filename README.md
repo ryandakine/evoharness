@@ -86,4 +86,4 @@ your tasks. Issues and PRs are welcome.
 python -m unittest discover -s tests -v
 ```
 
-MIT licensed. Experiment with it.
+MIT licensed.
