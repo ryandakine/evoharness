@@ -4,8 +4,8 @@ I read a few papers about LLM swarms and wanted to try building one myself.
 This is my attempt at reproducing parts of their methods and putting them in a
 small Python project I can mess around with.
 My swarm worked I ran a four-agent workflow through OpenRouter on a group
-theory question. One routed model returned an irrelevant classification, so there
-are definitely rough edges. That's the demo so far, not a benchmark.
+theory question. One routed model returned a classification on a math question, so there
+are definitely rough edges. 
 
 - Agent graphs that pass responses between models.
 - Genetic search, PSO graph search, and REINFORCE for experimenting with connections.
