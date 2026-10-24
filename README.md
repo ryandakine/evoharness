@@ -3,13 +3,9 @@
 I read a few papers about LLM swarms and wanted to try building one myself.
 This is my attempt at reproducing parts of their methods and putting them in a
 small Python project I can mess around with.
-
-**My swarm worked.** I ran a four-agent workflow through OpenRouter on a group
-theory question. The agents passed their responses along and the final answer
-was correct. One routed model returned an irrelevant classification, so there
+My swarm worked I ran a four-agent workflow through OpenRouter on a group
+theory question. One routed model returned an irrelevant classification, so there
 are definitely rough edges. That's the demo so far, not a benchmark.
-
-## What's in here
 
 - Agent graphs that pass responses between models.
 - Genetic search, PSO graph search, and REINFORCE for experimenting with connections.
@@ -18,7 +14,7 @@ are definitely rough edges. That's the demo so far, not a benchmark.
 - A LiteLLM backend, so you can use different model APIs or a compatible local endpoint.
 - Offline examples, baseline helpers, and train/validation/test splitting.
 
-The package is still called `evoharness` in Python.
+The package is still called evoharness in Python.
 
 ## Try it
 
