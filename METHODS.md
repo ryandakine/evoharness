@@ -13,15 +13,40 @@ reproduction or a single algorithm equivalent to all three.
 
 The core uses only the Python standard library. From the project directory:
 
-```powershell
-$env:PYTHONPATH = 'src'
+```bash
+python -m pip install -e ".[dev]"
 python examples/run_methods.py
-python -m unittest discover -s tests -v
+pytest
 ```
 
 The examples are offline fixtures. Their scores do not measure real model quality.
 For real use construct `Task` objects and model specifications, then use an actual
 backend. Supply actual provider prices yourself. No paid API calls are made by tests.
+
+## Execution, caching and parallelism
+
+`run_genome` prunes nodes that cannot reach the sink, then executes the rest one
+DAG layer at a time (a node's layer is one more than its deepest included parent).
+With `max_workers > 1` the nodes of a layer run in threads; results, nominal cost and
+call counts match the sequential run exactly, and `outputs` is always keyed in node
+order. `Evaluator(max_workers=N)` forwards this to every scoring and attribution call.
+Backends must then be thread-safe; `CachedBackend`, `MockBackend` and `APIBackend` are.
+
+`CachedBackend` keys on model name, endpoint, sample id and prompt. Prices are not part
+of the key: a hit under changed prices is re-costed from stored token counts, so
+correcting a price never re-spends. Generation settings (temperature, max_tokens) are
+not part of the key either; use a different `cache_path` when you change them. With
+`cache_path` set, every miss is appended as one JSON line and reloaded next run.
+
+A consequence of caching worth knowing: two nodes with the same role, model, sample id
+and inputs produce the same prompt and therefore the same cached text. If you want
+independent samples from identical sibling agents, give them different roles or run
+without the cache.
+
+`APIBackend` retries transient failures (rate limits, timeouts, connection errors,
+5xx, empty replies) with exponential backoff and lets everything else propagate at
+once. Inside `run_genome` a failed call surfaces as `AgentError` carrying the node
+index and model name; `BudgetExceeded` is passed through unchanged.
 
 ## Separate graph optimizers
 

@@ -3,10 +3,11 @@
 The generic task utility replaces the paper's trading Sharpe ratio. Call once
 per observed window; only history from that window is shown to the reflector.
 """
-from dataclasses import dataclass
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from math import isfinite
-from typing import Callable
+
 from .attribution import Attribution
 from .genome import Genome
 from .llm import Backend, ModelSpec

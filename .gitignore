@@ -17,3 +17,6 @@ output/
 credentials*.json
 .aws/
 .ssh/
+
+# local caches
+*.jsonl

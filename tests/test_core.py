@@ -1,8 +1,20 @@
 import random
 import unittest
-from evoharness import *
-from evoharness.genome import random_genome, mutate, crossover
-from evoharness.ga import nondominated_sort, dominates
+
+from evoharness import (
+    BudgetExceeded,
+    CachedBackend,
+    Evaluator,
+    GAConfig,
+    Genome,
+    MockBackend,
+    ModelSpec,
+    Task,
+    evolve,
+    single_agent,
+)
+from evoharness.ga import dominates, nondominated_sort
+from evoharness.genome import crossover, mutate, random_genome
 
 
 def make_eval(budget=None):

@@ -1,6 +1,7 @@
 """Prompt-grouped train/validation/test splits and frozen held-out reporting."""
-from dataclasses import dataclass
 import random
+from dataclasses import dataclass
+
 from .executor import Task
 from .fitness import Evaluator
 from .genome import Genome

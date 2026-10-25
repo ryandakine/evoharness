@@ -3,10 +3,11 @@
 Implements REINFORCE with a learned sigmoid baseline (Sec. 3.1.1).
 This is the static Darwinian branch, not the task-conditioned GAT branch.
 """
+import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from math import exp, isfinite
-import random
-from typing import Callable
+
 from .genome import Genome
 
 

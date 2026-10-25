@@ -3,9 +3,21 @@ import hashlib
 import re
 
 from evoharness import (
-    DistributionConfig, Evaluator, Experience, Genome, ModelSpec, PSOConfig,
-    Response, Task, evaluate_frozen, jfk_scores, optimize_prompts,
-    reinforce_graph, run_genome, search_roles, split_tasks,
+    DistributionConfig,
+    Evaluator,
+    Experience,
+    Genome,
+    ModelSpec,
+    PSOConfig,
+    Response,
+    Task,
+    evaluate_frozen,
+    jfk_scores,
+    optimize_prompts,
+    reinforce_graph,
+    run_genome,
+    search_roles,
+    split_tasks,
 )
 
 
