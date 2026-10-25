@@ -1,9 +1,15 @@
 """LLM backends, response cache, and spend budget."""
 from __future__ import annotations
+
 import hashlib
 import importlib
+import json
 import os
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 
@@ -36,31 +42,100 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+class EmptyResponse(ValueError):
+    """The provider answered, but with no usable text. Often transient on shared/free routers."""
+
+
 class CachedBackend:
     """Wraps a backend with a response cache and a recorded-spend cutoff.
 
     Cache hits are free for the budget but still report their nominal cost, so
-    fitness always reflects what a deployed swarm would cost.
+    fitness always reflects what a deployed swarm would cost. The key covers the
+    model name, endpoint, sample id and prompt; prices are deliberately excluded,
+    so correcting a price re-costs cached responses from their token counts
+    instead of re-spending on the API.
+
+    Pass ``cache_path`` to persist responses as JSON lines across runs. The
+    cache does not know about generation settings (temperature, max_tokens);
+    use a different path when you change them.
+
     One call may overshoot the cutoff before subsequent calls are blocked.
+    Safe to share between threads.
     """
 
-    def __init__(self, inner: Backend, budget_usd: float | None = None):
+    def __init__(self, inner: Backend, budget_usd: float | None = None,
+                 cache_path: str | Path | None = None):
         self.inner, self.budget, self.spent = inner, budget_usd, 0.0
-        self._cache: dict[str, Response] = {}
+        self._cache: dict[str, tuple[Response, float, float]] = {}
         self.hits = self.misses = 0
+        self._lock = threading.Lock()
+        self._path = Path(cache_path) if cache_path is not None else None
+        if self._path is not None:
+            self._load()
+
+    @staticmethod
+    def key(prompt: str, model: ModelSpec, sample: int) -> str:
+        raw = f"{model.name}|{model.api_base}|{sample}|{prompt}"
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def _load(self) -> None:
+        if not self._path.is_file():
+            return
+        with self._path.open(encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    e = json.loads(line)
+                    r = Response(e["text"], int(e["input_tokens"]), int(e["output_tokens"]), float(e["cost"]))
+                    self._cache[e["key"]] = (r, float(e["price_in"]), float(e["price_out"]))
+                except (ValueError, KeyError, TypeError):
+                    continue  # tolerate a truncated or foreign line
+
+    def _persist(self, key: str, r: Response, model: ModelSpec) -> None:
+        if self._path is None:
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        entry = dict(key=key, text=r.text, input_tokens=r.input_tokens, output_tokens=r.output_tokens,
+                     cost=r.cost, price_in=model.price_in, price_out=model.price_out)
+        with self._path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+
+    def __len__(self) -> int:
+        return len(self._cache)
 
     def complete(self, prompt: str, model: ModelSpec, sample: int = 0) -> Response:
-        key = hashlib.sha256(f"{model!r}|{sample}|{prompt}".encode()).hexdigest()
-        if key in self._cache:
-            self.hits += 1
-            return self._cache[key]
-        if self.budget is not None and self.spent >= self.budget:
-            raise BudgetExceeded(f"spent ${self.spent:.4f} >= cap ${self.budget:.4f}")
+        key = self.key(prompt, model, sample)
+        with self._lock:
+            hit = self._cache.get(key)
+            if hit is not None:
+                self.hits += 1
+                r, pin, pout = hit
+                if (pin, pout) != (model.price_in, model.price_out):
+                    r = Response(r.text, r.input_tokens, r.output_tokens,
+                                 price(model, r.input_tokens, r.output_tokens))
+                return r
+            if self.budget is not None and self.spent >= self.budget:
+                raise BudgetExceeded(f"spent ${self.spent:.4f} >= cap ${self.budget:.4f}")
         r = self.inner.complete(prompt, model, sample)
-        self.spent += r.cost
-        self.misses += 1
-        self._cache[key] = r
+        with self._lock:
+            self.spent += r.cost
+            self.misses += 1
+            self._cache[key] = (r, model.price_in, model.price_out)
+            self._persist(key, r, model)
         return r
+
+
+_TRANSIENT = {"RateLimitError", "RouterRateLimitError", "Timeout", "APITimeoutError", "APIConnectionError",
+              "ServiceUnavailableError", "InternalServerError", "BadGatewayError"}
+
+
+def is_transient(exc: BaseException) -> bool:
+    """Heuristic: provider errors that usually succeed on retry (rate limits, timeouts, 5xx)."""
+    if isinstance(exc, (TimeoutError, ConnectionError, EmptyResponse)):
+        return True
+    if {c.__name__ for c in type(exc).__mro__} & _TRANSIENT:
+        return True
+    status = getattr(exc, "status_code", None)
+    return isinstance(status, int) and (status in (408, 409, 425, 429) or status >= 500)
 
 
 class APIBackend:
@@ -70,25 +145,38 @@ class APIBackend:
     Credentials fall back to LiteLLM's native provider environment discovery.
     Per-model routes override backend defaults. sample is a cache discriminator,
     not a portable provider seed. Missing usage is rejected to avoid false costs.
+
+    Transient failures (rate limits, timeouts, 5xx, empty replies) are retried
+    up to ``retries`` times with exponential backoff starting at
+    ``retry_backoff`` seconds. Other errors propagate immediately.
     """
 
     def __init__(self, *, api_base: str | None = None, api_key: str | None = None,
                  max_tokens: int | None = 512, temperature: float | None = 0.7,
-                 timeout: float = 60.0, extra_params: dict | None = None):
+                 timeout: float = 60.0, extra_params: dict | None = None,
+                 retries: int = 2, retry_backoff: float = 1.0,
+                 sleep: Callable[[float], None] = time.sleep):
         try:
-            self._completion = importlib.import_module("litellm").completion
+            litellm = importlib.import_module("litellm")
         except ModuleNotFoundError as exc:
             if exc.name != "litellm":
                 raise
             raise ImportError('APIBackend requires: pip install "evoharness[api]"') from exc
+        self._completion = litellm.completion
+        if hasattr(litellm, "suppress_debug_info"):
+            litellm.suppress_debug_info = True  # drop the "Give Feedback / Get Help" banner on errors
+        if retries < 0 or retry_backoff < 0:
+            raise ValueError("retries and retry_backoff must be nonnegative")
         self.api_base, self._api_key = api_base, api_key
         self.max_tokens, self.temperature, self.timeout = max_tokens, temperature, timeout
+        self.retries, self.retry_backoff, self._sleep = retries, retry_backoff, sleep
         self.extra_params = dict(extra_params or {})
         protected = {"model", "messages", "stream", "api_base", "api_key", "timeout", "num_retries"}
         if protected & self.extra_params.keys():
-            raise ValueError("extra_params cannot override routing, credentials, messages, streaming, timeout, or retries")
+            raise ValueError("extra_params cannot override routing, credentials, messages, "
+                             "streaming, timeout, or retries")
 
-    def complete(self, prompt: str, model: ModelSpec, sample: int = 0) -> Response:
+    def _params(self, prompt: str, model: ModelSpec) -> dict:
         params = dict(self.extra_params)
         params.update(model=model.name, messages=[{"role": "user", "content": prompt}],
                       stream=False, timeout=self.timeout, num_retries=0)
@@ -111,35 +199,59 @@ class APIBackend:
             api_key = self._api_key
         if api_key is not None:
             params["api_key"] = api_key
+        return params
+
+    def _once(self, params: dict, model: ModelSpec) -> Response:
         result = self._completion(**params)
-        if not result.choices:
-            raise ValueError("model API returned no completion choices")
+        if not getattr(result, "choices", None):
+            raise EmptyResponse("model API returned no completion choices")
         content = result.choices[0].message.content
         if isinstance(content, list):
             content = "".join(block.get("text", "") for block in content if isinstance(block, dict))
         if not isinstance(content, str) or not content.strip():
-            raise ValueError("model API returned no text; choose a text-capable model or increase its output limit")
+            raise EmptyResponse("model API returned no text; choose a text-capable model "
+                                "or increase its output limit")
         usage = getattr(result, "usage", None)
         tin, tout = getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None)
-        if (not isinstance(tin, int) or not isinstance(tout, int) or tin < 0 or tout < 0):
+        if not isinstance(tin, int) or not isinstance(tout, int) or tin < 0 or tout < 0:
             raise ValueError("model API omitted valid token usage; cannot report inference cost")
         return Response(content, tin, tout, price(model, tin, tout))
+
+    def complete(self, prompt: str, model: ModelSpec, sample: int = 0) -> Response:
+        params = self._params(prompt, model)
+        attempt = 0
+        while True:
+            try:
+                return self._once(params, model)
+            except Exception as exc:
+                if attempt >= self.retries or not is_transient(exc):
+                    raise
+                self._sleep(self.retry_backoff * (2 ** attempt))
+                attempt += 1
 
 
 class MockBackend:
     """Deterministic offline backend for tests and demos. NOT a model of real LLM behavior.
 
     P(correct) rises with model index and with the number of upstream inputs.
+    Model index is the position in ``model_names`` when given, otherwise the
+    order in which names are first seen (racy under max_workers > 1; pass
+    ``model_names`` for reproducible parallel runs).
     """
 
-    def __init__(self, answers: dict[str, str], base: list[float], input_bonus: float = 0.06):
+    def __init__(self, answers: dict[str, str], base: list[float], input_bonus: float = 0.06,
+                 model_names: list[str] | None = None):
+        if not base:
+            raise ValueError("base must list at least one probability")
         self.answers, self.base, self.bonus = answers, base, input_bonus
-        self.models: list[str] = []
+        self.models: list[str] = list(model_names or [])
+        self._lock = threading.Lock()
 
     def complete(self, prompt: str, model: ModelSpec, sample: int = 0) -> Response:
-        if model.name not in self.models:
-            self.models.append(model.name)
-        idx = self.models.index(model.name)
+        with self._lock:
+            if model.name not in self.models:
+                self.models.append(model.name)
+            idx = self.models.index(model.name)
         ref = next((a for q, a in self.answers.items() if f"Task: {q}\n" in prompt), "?")
         n_in = min(prompt.count("[input from agent"), 3)
         p = min(0.98, self.base[idx % len(self.base)] + self.bonus * n_in)

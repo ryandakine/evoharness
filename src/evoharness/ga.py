@@ -1,9 +1,11 @@
 """Multi-objective GA (NSGA-II) over agent-graph genomes. All objectives are minimized."""
 from __future__ import annotations
+
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
-from .genome import Genome, random_genome, mutate, crossover
+
+from .genome import Genome, crossover, mutate, random_genome
 
 Objs = tuple[float, ...]
 
@@ -66,7 +68,19 @@ class GAResult:
     history: list[dict] = field(default_factory=list)
 
 
+def _tourney(pop: list[Genome], rank: dict[int, int], crowd: dict[int, float], rng: random.Random) -> Genome:
+    """Binary tournament: lower rank wins, ties go to the less crowded genome."""
+    a, b = rng.randrange(len(pop)), rng.randrange(len(pop))
+    return pop[a if (rank[a], -crowd[a]) <= (rank[b], -crowd[b]) else b]
+
+
 def evolve(cfg: GAConfig, evaluate: Callable[[Genome], Objs], seeds: list[Genome] | None = None) -> GAResult:
+    if cfg.pop_size < 2 or cfg.generations < 0 or cfg.n_nodes < 1 or cfg.n_roles < 1 or cfg.n_models < 1:
+        raise ValueError("pop_size must be >= 2 and n_nodes, n_roles, n_models positive")
+    for s in seeds or []:
+        if s.n != cfg.n_nodes:
+            raise ValueError(f"seed genome has {s.n} nodes; cfg.n_nodes is {cfg.n_nodes}")
+        s.validate_against(cfg.n_roles, cfg.n_models)
     rng = random.Random(cfg.seed)
     memo: dict[tuple, Objs] = {}
 
@@ -76,7 +90,7 @@ def evolve(cfg: GAConfig, evaluate: Callable[[Genome], Objs], seeds: list[Genome
             memo[k] = evaluate(g)
         return memo[k]
 
-    pop = list(seeds or [])
+    pop = [s.copy() for s in seeds or []]
     while len(pop) < cfg.pop_size:
         pop.append(random_genome(rng, cfg.n_nodes, cfg.n_roles, cfg.n_models))
     pop = pop[: cfg.pop_size]
@@ -94,14 +108,9 @@ def evolve(cfg: GAConfig, evaluate: Callable[[Genome], Objs], seeds: list[Genome
 
     for gen in range(cfg.generations):
         _, _, rank, crowd = rank_info(pop)
-
-        def tourney() -> Genome:
-            a, b = rng.randrange(len(pop)), rng.randrange(len(pop))
-            return pop[a if (rank[a], -crowd[a]) <= (rank[b], -crowd[b]) else b]
-
         kids = []
         while len(kids) < cfg.pop_size:
-            p1, p2 = tourney(), tourney()
+            p1, p2 = _tourney(pop, rank, crowd, rng), _tourney(pop, rank, crowd, rng)
             c = crossover(p1, p2, rng) if rng.random() < cfg.crossover_rate else p1.copy()
             kids.append(mutate(c, rng, cfg.n_roles, cfg.n_models, cfg.mutation_rate))
 

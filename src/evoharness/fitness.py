@@ -1,32 +1,39 @@
 """Fitness and compute-matched baselines."""
 from __future__ import annotations
+
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
-from .executor import Task, run_genome, exact_match, extract_answer
-from .genome import Genome, DEFAULT_ROLES
+
+from .attribution import Attribution, dag_shapley
+from .executor import Task, exact_match, extract_answer, run_genome
+from .genome import DEFAULT_ROLES, Genome
 from .llm import Backend, ModelSpec
-from .attribution import dag_shapley, Attribution
 
 
 @dataclass
 class Evaluator:
+    """Scores genomes on a task set. ``max_workers`` > 1 runs independent agents concurrently."""
+
     tasks: list[Task]
     backend: Backend
     models: list[ModelSpec]
     roles: list[str] | None = None
     scorer: Callable[[str, str], float] = exact_match
+    max_workers: int = 1
 
     def __post_init__(self):
         if not self.tasks or not self.models:
             raise ValueError("tasks and models must be nonempty")
+        if self.max_workers < 1:
+            raise ValueError("max_workers must be positive")
         self.roles = self.roles or DEFAULT_ROLES
 
     def score(self, g: Genome, sample: int = 0) -> tuple[float, float]:
         """Return (accuracy, mean cost per task)."""
         acc = cost = 0.0
         for t in self.tasks:
-            r = run_genome(g, t, self.backend, self.models, self.roles, sample)
+            r = run_genome(g, t, self.backend, self.models, self.roles, sample, max_workers=self.max_workers)
             acc += self.scorer(r.answer, t.reference)
             cost += r.cost
         n = len(self.tasks)
@@ -61,7 +68,8 @@ class Evaluator:
             for task in self.tasks:
                 result = run_genome(g, task, self.backend, self.models, self.roles, sample,
                                     coalition=set(coalition), node_cache=cache,
-                                    external_inputs=external_inputs(task) if external_inputs else None)
+                                    external_inputs=external_inputs(task) if external_inputs else None,
+                                    max_workers=self.max_workers)
                 total += self.scorer(result.answer, task.reference)
             return total / len(self.tasks)
         return dag_shapley(g, value, max_nodes=max_nodes)

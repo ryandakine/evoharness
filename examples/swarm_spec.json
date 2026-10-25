@@ -1,0 +1,16 @@
+{
+  "_comment": "Custom swarm for `evoharness --spec examples/swarm_spec.json --prompt ...`. Nodes are numbered in order; the last node produces the answer; edges go from a lower to a higher index. 'models' is optional: omit it to use --model for every agent.",
+  "roles": [
+    "Solve the task carefully and show your reasoning.",
+    "Solve the task a second way, independently, and show your reasoning.",
+    "You are a strict reviewer. Compare the supplied solutions, find mistakes, and state which answer is right and why.",
+    "Write the final response for the user. Be brief. Finish with 'Answer: <final answer>'."
+  ],
+  "nodes": [
+    {"role": 0},
+    {"role": 1},
+    {"role": 2},
+    {"role": 3}
+  ],
+  "edges": [[0, 2], [1, 2], [0, 3], [1, 3], [2, 3]]
+}

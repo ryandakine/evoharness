@@ -4,8 +4,10 @@ Nodes that cannot reach the output are pruned at run time, so structural mutatio
 directly changes cost.
 """
 from __future__ import annotations
+
 import random
 from dataclasses import dataclass, field
+from typing import Any
 
 DEFAULT_ROLES = [
     "You are a careful solver. Work step by step, then finish with 'Answer: <final answer>'.",
@@ -23,10 +25,12 @@ class Genome:
     def __post_init__(self):
         if not self.roles or len(self.roles) != len(self.models):
             raise ValueError("roles and models must have the same nonzero length")
-        if any(i < 0 for i in self.roles + self.models):
-            raise ValueError("role and model indices must be nonnegative")
-        if any(not (0 <= i < j < self.n) for i, j in self.edges):
-            raise ValueError("edges must satisfy 0 <= source < target < n")
+        if any(not isinstance(i, int) or i < 0 for i in self.roles + self.models):
+            raise ValueError("role and model indices must be nonnegative integers")
+        for e in self.edges:
+            if (not isinstance(e, tuple) or len(e) != 2 or not all(isinstance(x, int) for x in e)
+                    or not 0 <= e[0] < e[1] < self.n):
+                raise ValueError("edges must be (source, target) pairs with 0 <= source < target < n")
 
     @property
     def n(self) -> int:
@@ -45,11 +49,33 @@ class Genome:
                     stack.append(p)
         return sorted(need)
 
-    def copy(self) -> "Genome":
+    def copy(self) -> Genome:
         return Genome(list(self.roles), list(self.models), set(self.edges))
 
     def key(self) -> tuple:
         return (tuple(self.roles), tuple(self.models), tuple(sorted(self.edges)))
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-ready form; see from_dict."""
+        return {"roles": list(self.roles), "models": list(self.models),
+                "edges": [list(e) for e in sorted(self.edges)]}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Genome:
+        try:
+            roles, models = list(data["roles"]), list(data["models"])
+            edges = {(int(a), int(b)) for a, b in data.get("edges", [])}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("genome dict needs 'roles', 'models' and optional 'edges' "
+                             "as [source, target] pairs") from exc
+        return cls(roles, models, edges)
+
+    def validate_against(self, n_roles: int, n_models: int) -> None:
+        """Raise if any node refers to a role or model index outside the given tables."""
+        if any(r >= n_roles for r in self.roles):
+            raise ValueError(f"genome uses role index >= {n_roles}; the role table is too short")
+        if any(m >= n_models for m in self.models):
+            raise ValueError(f"genome uses model index >= {n_models}; the model table is too short")
 
 
 def random_genome(rng: random.Random, n: int, n_roles: int, n_models: int, p_edge: float = 0.35) -> Genome:
@@ -76,7 +102,8 @@ def mutate(g: Genome, rng: random.Random, n_roles: int, n_models: int, rate: flo
 
 
 def crossover(a: Genome, b: Genome, rng: random.Random) -> Genome:
-    assert a.n == b.n
+    if a.n != b.n:
+        raise ValueError(f"cannot cross genomes with {a.n} and {b.n} nodes")
     roles, models, edges = [], [], set()
     for i in range(a.n):
         src = a if rng.random() < 0.5 else b

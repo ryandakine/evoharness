@@ -4,11 +4,12 @@ PSO includes normalized inertia/cognitive/social/worst-repulsion terms. This
 module does NOT update LLM checkpoints: model selection and weight training
 are distinct. Arbitrary continuous vectors can be searched with ParticleSwarm.
 """
+import random
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import exp, isfinite
-import random
-from typing import Callable
+
 from .genome import Genome
 
 

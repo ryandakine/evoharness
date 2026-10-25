@@ -3,9 +3,10 @@
 AAAI HiveMind, Algorithms 3-4. Enumeration remains exponential; only viable
 coalitions invoke the utility callback. Node-output reuse lives in run_genome.
 """
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import comb, isfinite
-from typing import Callable
+
 from .genome import Genome
 
 

@@ -2,10 +2,27 @@ import random
 import unittest
 
 from evoharness import (
-    Attribution, DistributionConfig, Evaluator, Experience, Genome, ModelSpec,
-    PSOConfig, ParticleSwarm, Response, Task, dag_shapley, evaluate_frozen,
-    g_decode, jfk_scores, optimize_prompts, reinforce_graph, run_genome,
-    search_roles, shapley, split_tasks, viable,
+    Attribution,
+    DistributionConfig,
+    Evaluator,
+    Experience,
+    Genome,
+    ModelSpec,
+    ParticleSwarm,
+    PSOConfig,
+    Response,
+    Task,
+    dag_shapley,
+    evaluate_frozen,
+    g_decode,
+    jfk_scores,
+    optimize_prompts,
+    reinforce_graph,
+    run_genome,
+    search_roles,
+    shapley,
+    split_tasks,
+    viable,
 )
 
 
@@ -45,7 +62,8 @@ class AttributionTests(unittest.TestCase):
 
     def test_paper_coalitions_and_full_shapley_equivalence(self):
         g = layered()
-        callback = lambda s: sum(i + 1 for i in s)
+        def callback(s):
+            return sum(i + 1 for i in s)
         fast = dag_shapley(g, callback)
         slow = shapley(g.n, lambda s: callback(s) if viable(g, s) else 0)
         self.assertEqual(fast.evaluated, 49)
@@ -131,7 +149,8 @@ class OptimizationTests(unittest.TestCase):
 
     def test_role_search_returns_measured_graph(self):
         cfg = PSOConfig(particles=4, iterations=4, seed=1)
-        utility = lambda g: float(len(g.edges))
+        def utility(g):
+            return float(len(g.edges))
         r = search_roles(Genome([0] * 4, [0] * 4), utility, cfg)
         self.assertEqual(r.utility, utility(r.genome))
         self.assertEqual(r.genome.key(), search_roles(Genome([0] * 4, [0] * 4), utility, cfg).genome.key())
