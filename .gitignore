@@ -21,3 +21,16 @@ credentials*.json
 # local caches
 *.jsonl
 scratch/
+
+# Swarm & tool runtime artifacts
+.evoharness/
+.mcp.json
+.mcp.*.json
+*.token
+*.secret
+
+# Coverage & testing
+.coverage
+coverage.xml
+htmlcov/
+.DS_Store

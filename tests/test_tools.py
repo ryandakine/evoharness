@@ -142,3 +142,41 @@ def test_sanitize_env_pattern():
     assert "LD_PRELOAD" not in cleaned
     assert "PYTHONPATH" not in cleaned
     assert "USER_TOKEN" not in cleaned
+
+
+def test_redact_sensitive_output():
+    from evoharness.tools.base import redact_sensitive_text
+    env = {
+        "OPENAI_API_KEY": "sk-test-live-key-99887766",
+        "DATABASE_PASSWORD": "super-secret-pw-123",
+    }
+    raw = (
+        "Here is the output: sk-test-live-key-99887766 and password: super-secret-pw-123. "
+        "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9. "
+        "Connecting to https://admin:supersecret@internal.db:5432/db "
+        "and api_key=another-secret-token-val"
+    )
+    scrubbed = redact_sensitive_text(raw, env=env)
+    assert "sk-test-live-key-99887766" not in scrubbed
+    assert "super-secret-pw-123" not in scrubbed
+    assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in scrubbed
+    assert "admin:supersecret@" not in scrubbed
+    assert "another-secret-token-val" not in scrubbed
+    assert "[REDACTED]" in scrubbed
+
+
+def test_registry_redacts_tool_output():
+    from evoharness.tools.base import Tool, ToolResult
+    class LeakyTool(Tool):
+        name = "leaky"
+        description = "test leaky tool"
+        parameters = {"type": "object", "properties": {}}
+        def execute(self, args, ctx):
+            return ToolResult(output="Leaked key: sk-secret-canary-999")
+
+    reg = ToolRegistry()
+    reg.register(LeakyTool())
+    ctx = ExecutionContext(env={"CANARY_KEY": "sk-secret-canary-999"})
+    res = reg.execute("leaky", {}, ctx)
+    assert "sk-secret-canary-999" not in res.output
+    assert "[REDACTED]" in res.output

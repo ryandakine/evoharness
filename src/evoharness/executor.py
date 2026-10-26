@@ -16,7 +16,7 @@ from typing import Any
 
 from .genome import Genome
 from .llm import Backend, BudgetExceeded, ModelSpec, Response
-from .tools.base import ExecutionContext, ToolRegistry, ToolResult
+from .tools.base import ExecutionContext, ToolRegistry, ToolResult, redact_sensitive_text
 
 logger = logging.getLogger("evoharness.executor")
 _AUDIT_LOCK = threading.Lock()
@@ -80,6 +80,15 @@ def _layers(g: Genome, need: set[int]) -> list[list[int]]:
     return [sorted(layers[lv]) for lv in sorted(layers)]
 
 
+def _sanitize_audit_args(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: _sanitize_audit_args(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_audit_args(v) for v in obj]
+    if isinstance(obj, str):
+        return redact_sensitive_text(obj)
+    return obj
+
 def _log_audit(
     audit_file: Path | str | None,
     node: int,
@@ -99,7 +108,7 @@ def _log_audit(
             "node": node,
             "model": model,
             "tool": tool_name,
-            "args": args,
+            "args": _sanitize_audit_args(args),
             "error": res.error,
             "is_dry_run": res.is_dry_run,
             "duration_s": round(duration, 4),

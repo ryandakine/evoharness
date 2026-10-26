@@ -1,6 +1,6 @@
 [project]
 name = "evoharness"
-version = "0.3.2"
+version = "0.3.3"
 description = "Build, run and optimize small graphs of LLM agents: NSGA-II, PSO, REINFORCE, Shapley attribution, cost tracking"
 readme = "README.md"
 license = { text = "MIT" }

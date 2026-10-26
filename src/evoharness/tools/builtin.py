@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .base import ExecutionContext, PathGuard, Tool, ToolResult, sanitize_env, truncate_output
+from .base import ExecutionContext, PathGuard, Tool, ToolResult, redact_sensitive_text, sanitize_env, truncate_output
 
 # Sensitive environment variables stripped from subprocess execution by default
 SENSITIVE_ENV_KEYS = {
@@ -92,7 +92,7 @@ class BashTool(Tool):
 
             combined = "\n".join(out_parts).strip() if out_parts else "[command executed with no output]"
             return ToolResult(
-                output=truncate_output(combined),
+                output=truncate_output(redact_sensitive_text(combined, clean_env)),
                 error=(proc.returncode != 0),
                 metadata={"exit_code": proc.returncode},
             )

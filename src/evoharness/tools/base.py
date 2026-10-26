@@ -1,6 +1,7 @@
 """Base tool interfaces, execution context, path validation, and registry."""
 from __future__ import annotations
 
+import os
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -72,6 +73,32 @@ def sanitize_env(base_env: dict[str, str], overrides: dict[str, str] | None = No
         and not any(k.startswith(p) for p in DANGEROUS_ENV_PREFIXES)
         and k not in DANGEROUS_ENV_KEYS
     }
+
+
+_AUTH_SCHEME_RE = re.compile(r"(?i)\b(bearer|basic)\b[\s:=]+[\"\']?([A-Za-z0-9._\-/+=]{8,})")
+_INLINE_CRED_RE = re.compile(
+    r"(?i)\b(password|passwd|secret|token|api[_-]?key|bearer|authorization)\b"
+    r"\s*(?:[:=]|\bis\b|\bwas\b)\s*\S+"
+)
+_BASIC_AUTH_URL_RE = re.compile(r"://[^/\s:@]+:[^/\s]+@")
+
+
+def redact_sensitive_text(text: str, env: dict[str, str] | None = None) -> str:
+    """Scrub sensitive credentials, tokens, and authorization headers from text output."""
+    if not text or not isinstance(text, str):
+        return text
+
+    # 1. Scrub actual secret values present in host or context environment (if >= 6 chars)
+    search_env = os.environ if env is None else {**os.environ, **env}
+    for k, v in search_env.items():
+        if SENSITIVE_ENV_PATTERN.search(k) and isinstance(v, str) and len(v.strip()) >= 6:
+            text = text.replace(v.strip(), "[REDACTED]")
+
+    # 2. Scrub standard auth patterns
+    text = _AUTH_SCHEME_RE.sub(lambda m: f"{m.group(1)} [REDACTED]", text)
+    text = _BASIC_AUTH_URL_RE.sub("://[REDACTED]@", text)
+    text = _INLINE_CRED_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
+    return text
 
 class PathGuard:
     """Validates that target paths strictly resolve within the workspace boundary."""
@@ -149,9 +176,17 @@ class ToolRegistry:
                 error=True,
             )
         try:
-            return tool.execute(args, context)
+            res = tool.execute(args, context)
         except Exception as exc:
             return ToolResult(
-                output=f"Error executing tool '{name}': {type(exc).__name__}: {exc}",
+                output=redact_sensitive_text(
+                    f"Error executing tool '{name}': {type(exc).__name__}: {exc}",
+                    context.env,
+                ),
                 error=True,
             )
+        return ToolResult(
+            output=redact_sensitive_text(res.output, context.env),
+            error=res.error,
+            is_dry_run=res.is_dry_run,
+        )
