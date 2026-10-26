@@ -34,11 +34,14 @@ What is in the box:
 - **Backends**: anything LiteLLM supports (OpenAI, Anthropic, OpenRouter, Ollama, vLLM,
   ...), a persistent cache with a spend cap, and a deterministic mock for offline work.
 - **Evaluation**: leakage-guarded train/validation/test splits and frozen held-out scoring.
+- **Tool execution & MCP**: agents can execute shell commands, read and write files with
+  strict workspace path containment (`PathGuard`), and connect to Model Context Protocol
+  (MCP) servers over stdio.
 
 ## Install
 
 ```bash
-git clone https://github.com/surren83-ctrl/evoharness.git
+git clone https://github.com/ryandakine/evoharness.git
 cd evoharness
 python -m venv .venv
 # Windows PowerShell: .venv\Scripts\Activate.ps1   |   macOS/Linux: source .venv/bin/activate
@@ -105,6 +108,31 @@ available at that moment. Different agents in one swarm can land on different mo
 with different habits, and empty replies under load are common. The harness retries
 empties, but for anything you want to reason about, pin a specific model.
 
+## Tool execution & ReAct swarms
+
+Agents can optionally be equipped with actuators: shell command execution (`bash`),
+file operations (`read_file`, `write_file`, `edit_file`), and Model Context Protocol
+(`MCP`) servers over stdio:
+
+```bash
+# Enable built-in tools (bash, file reader/writer/editor)
+evoharness --tools builtin --prompt "Inspect the current repo and run pytest"
+
+# Dry-run mode: simulates tool mutations without modifying the filesystem
+evoharness --tools builtin --dry-run --prompt "Create a README file"
+
+# Attach external MCP servers from a config file (.mcp.json)
+evoharness --tools mcp --mcp .mcp.json --prompt "Query database and summarize findings"
+
+# Built-in audit preset (auditor -> tester -> synthesizer) with tools active
+evoharness --preset audit --prompt "Audit tests/test_core.py and fix failing tests"
+```
+
+Safety boundaries:
+- **`PathGuard`**: all file operations are strictly confined within the execution context (`--cwd`). Traversal attempts outside the workspace are blocked.
+- **Environment Sanitization**: sensitive tokens (`*KEY*`, `*TOKEN*`, `*SECRET*`) and loader injection variables (`LD_PRELOAD`, `BASH_ENV`, `PYTHONPATH`) are scrubbed before subprocess spawns.
+- **Audit Logging**: every tool call, argument payload, exit status, and output hash is appended to `.evoharness/audit.jsonl`.
+
 ## Optimize a swarm
 
 The offline demos use fixture backends, so their numbers say nothing about real model
@@ -141,7 +169,7 @@ what does not.
 
 ```bash
 python -m pip install -e ".[api,dev]"
-pytest            # 60+ tests, all offline; no API calls
+pytest            # 73 tests, all offline; no API calls
 ruff check .
 ```
 
