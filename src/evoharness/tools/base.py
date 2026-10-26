@@ -48,6 +48,37 @@ def truncate_output(
     return f"{head}{marker}{tail}"
 
 
+
+SENSITIVE_ENV_KEYS = {
+    "LLM_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "KIMI_API_KEY",
+    "GROK_API_KEY",
+}
+DANGEROUS_ENV_PREFIXES = ("LD_", "BASH_")
+DANGEROUS_ENV_KEYS = {"PYTHONPATH"}
+
+
+def sanitize_env(base_env: dict[str, str], overrides: dict[str, str] | None = None) -> dict[str, str]:
+    """Sanitize environment variables for subprocess execution."""
+    env = dict(base_env)
+    if overrides:
+        for k, v in overrides.items():
+            if k in DANGEROUS_ENV_KEYS or any(k.startswith(p) for p in DANGEROUS_ENV_PREFIXES):
+                continue
+            env[k] = v
+    return {
+        k: v
+        for k, v in env.items()
+        if k not in SENSITIVE_ENV_KEYS
+        and not any(k.startswith(p) for p in DANGEROUS_ENV_PREFIXES)
+        and k not in DANGEROUS_ENV_KEYS
+    }
+
 class PathGuard:
     """Validates that target paths strictly resolve within the workspace boundary."""
 

@@ -12,7 +12,7 @@ from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
 
-from .base import ExecutionContext, Tool, ToolResult, truncate_output
+from .base import ExecutionContext, Tool, ToolResult, sanitize_env, truncate_output
 
 logger = logging.getLogger("evoharness.mcp")
 
@@ -55,9 +55,7 @@ class MCPStdioClient:
 
     def start(self, timeout: float = 15.0) -> None:
         cmd = [self.command] + self.args
-        clean_env = dict(os.environ)
-        if self.env:
-            clean_env.update(self.env)
+        clean_env = sanitize_env(os.environ, self.env)
 
         self.proc = subprocess.Popen(
             cmd,

@@ -175,13 +175,23 @@ def run_react_node(
         for tc in resp.tool_calls:
             tool_name = tc["function"]["name"]
             raw_args = tc["function"].get("arguments", "{}")
+            parse_error = None
             try:
                 args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-            except Exception:
+                if not isinstance(args, dict):
+                    args = {}
+            except Exception as exc:
                 args = {}
+                parse_error = str(exc)
 
             t0 = time.time()
-            res = tool_registry.execute(tool_name, args, context)
+            if parse_error:
+                res = ToolResult(
+                    output=f"Error: malformed JSON arguments for tool '{tool_name}': {parse_error}. Please provide valid JSON parameters.",
+                    error=True,
+                )
+            else:
+                res = tool_registry.execute(tool_name, args, context)
             duration = time.time() - t0
 
             if on_tool_call:

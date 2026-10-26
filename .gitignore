@@ -20,3 +20,4 @@ credentials*.json
 
 # local caches
 *.jsonl
+scratch/

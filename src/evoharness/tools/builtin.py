@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .base import ExecutionContext, PathGuard, Tool, ToolResult, truncate_output
+from .base import ExecutionContext, PathGuard, Tool, ToolResult, sanitize_env, truncate_output
 
 # Sensitive environment variables stripped from subprocess execution by default
 SENSITIVE_ENV_KEYS = {
@@ -56,9 +56,7 @@ class BashTool(Tool):
                 is_dry_run=True,
             )
 
-        clean_env = {
-            k: v for k, v in (os.environ | context.env).items() if k not in SENSITIVE_ENV_KEYS
-        }
+        clean_env = sanitize_env(os.environ, context.env)
 
         try:
             proc = subprocess.Popen(
