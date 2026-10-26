@@ -169,7 +169,7 @@ what does not.
 
 ```bash
 python -m pip install -e ".[api,dev]"
-pytest            # 73 tests, all offline; no API calls
+pytest            # 75 tests, all offline; no API calls
 ruff check .
 ```
 

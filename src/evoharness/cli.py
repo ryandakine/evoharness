@@ -161,12 +161,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"evoharness {__version__}")
 
     # Tool options
-    p.add_argument("--tools", default="none", help="tools available: none, all, builtin, bash, files, mcp, or comma-separated list")
+    p.add_argument(
+        "--tools", default="none",
+        help="tools available: none, all, builtin, bash, files, mcp, or comma-separated list",
+    )
     p.add_argument("--mcp", help="path to MCP config file (.mcp.json)")
     p.add_argument("--cwd", help="workspace directory for tools (default: current directory)")
     p.add_argument("--max-tool-turns", type=int, default=10, help="max tool iterations per agent node (default: 10)")
     p.add_argument("--dry-run", action="store_true", help="simulate tool mutations without modifying files")
-    p.add_argument("--audit-file", help="path to JSON lines tool audit file (default: ./.evoharness/audit.jsonl when tools active)")
+    p.add_argument(
+        "--audit-file",
+        help="path to JSON lines tool audit file (default: ./.evoharness/audit.jsonl when tools active)",
+    )
     return p
 
 
@@ -181,7 +187,9 @@ def _load_env(path: Path) -> None:
     load_dotenv(path, override=False, interpolate=False)
 
 
-def _setup_tools(tools_arg: str, mcp_config: str | None, cwd: Path, dry_run: bool) -> tuple[ToolRegistry | None, ExecutionContext]:
+def _setup_tools(
+    tools_arg: str, mcp_config: str | None, cwd: Path, dry_run: bool
+) -> tuple[ToolRegistry | None, ExecutionContext]:
     clean_arg = tools_arg.strip().lower()
     ctx = ExecutionContext(cwd=cwd, dry_run=dry_run)
     if clean_arg in ("none", ""):
@@ -279,7 +287,8 @@ def main(argv: Sequence[str] | None = None, env_file: str | Path | None = None) 
         tools_arg = "all"
 
     tool_registry, ctx = _setup_tools(tools_arg, args.mcp, cwd, args.dry_run)
-    audit_path = Path(args.audit_file) if args.audit_file else (cwd / ".evoharness" / "audit.jsonl" if tool_registry else None)
+    default_audit = cwd / ".evoharness" / "audit.jsonl" if tool_registry else None
+    audit_path = Path(args.audit_file) if args.audit_file else default_audit
 
     backend = APIBackend(api_base=args.api_base, api_key=os.environ.get("LLM_API_KEY") or None,
                          max_tokens=args.max_tokens, temperature=args.temperature,

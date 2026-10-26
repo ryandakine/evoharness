@@ -1,8 +1,5 @@
 import json
 import sys
-import tempfile
-from pathlib import Path
-import pytest
 
 from evoharness.tools.base import ExecutionContext
 from evoharness.tools.mcp import MCPConfigLoader, MCPStdioClient, MCPToolAdapter, _sanitize_schema
@@ -23,7 +20,7 @@ while True:
         msg = json.loads(line)
     except Exception:
         continue
-    
+
     method = msg.get("method")
     msg_id = msg.get("id")
 

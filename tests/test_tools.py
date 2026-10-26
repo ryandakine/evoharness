@@ -1,7 +1,7 @@
-import pytest
-from pathlib import Path
 
-from evoharness.tools.base import ExecutionContext, PathGuard, ToolRegistry, ToolResult, truncate_output
+import pytest
+
+from evoharness.tools.base import ExecutionContext, PathGuard, ToolRegistry, truncate_output
 from evoharness.tools.builtin import BashTool, EditFileTool, ReadFileTool, WriteFileTool
 
 
@@ -115,3 +115,30 @@ def test_tool_registry():
     res = registry.execute("nonexistent", {}, ExecutionContext())
     assert res.error
     assert "not found" in res.output
+
+
+def test_path_guard_rejects_root():
+    with pytest.raises(ValueError, match="Root directory.*not permitted"):
+        PathGuard.resolve_and_verify("foo.txt", "/")
+
+
+def test_sanitize_env_pattern():
+    from evoharness.tools.base import sanitize_env
+    raw_env = {
+        "PATH": "/usr/bin",
+        "MY_SECRET_KEY": "hidden",
+        "AUTH_TOKEN": "hidden",
+        "DB_PASSWORD": "hidden",
+        "LD_PRELOAD": "/bad.so",
+        "PYTHONPATH": "/bad/path",
+        "SAFE_VAR": "visible",
+    }
+    cleaned = sanitize_env(raw_env, overrides={"USER_TOKEN": "xyz", "FOO": "bar"})
+    assert "SAFE_VAR" in cleaned
+    assert "FOO" in cleaned
+    assert "MY_SECRET_KEY" not in cleaned
+    assert "AUTH_TOKEN" not in cleaned
+    assert "DB_PASSWORD" not in cleaned
+    assert "LD_PRELOAD" not in cleaned
+    assert "PYTHONPATH" not in cleaned
+    assert "USER_TOKEN" not in cleaned

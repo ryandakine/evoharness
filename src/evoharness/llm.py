@@ -141,7 +141,7 @@ class CachedBackend:
         tool_choice: str | None = None,
     ) -> Response:
         if hasattr(self.inner, "complete_messages"):
-            return getattr(self.inner, "complete_messages")(
+            return self.inner.complete_messages(
                 messages, model, sample, tools=tools, tool_choice=tool_choice
             )
         prompt = "\n".join(m.get("content", "") for m in messages if m.get("content"))

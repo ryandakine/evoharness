@@ -1,12 +1,9 @@
 import json
-from pathlib import Path
-import pytest
 
-from evoharness.executor import run_genome, run_react_node, Task
-from evoharness.genome import Genome
+from evoharness.executor import run_react_node
 from evoharness.llm import ModelSpec, Response
 from evoharness.tools.base import ExecutionContext, ToolRegistry
-from evoharness.tools.builtin import ReadFileTool, WriteFileTool
+from evoharness.tools.builtin import ReadFileTool
 
 
 class MockReActBackend:

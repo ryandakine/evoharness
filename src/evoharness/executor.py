@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,7 @@ from .llm import Backend, BudgetExceeded, ModelSpec, Response
 from .tools.base import ExecutionContext, ToolRegistry, ToolResult
 
 logger = logging.getLogger("evoharness.executor")
+_AUDIT_LOCK = threading.Lock()
 
 
 @dataclass
@@ -104,8 +106,9 @@ def _log_audit(
             "output_hash": hashlib.sha256(res.output.encode("utf-8")).hexdigest()[:16],
             "output_len": len(res.output),
         }
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec) + "\n")
+        with _AUDIT_LOCK:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
     except Exception as exc:
         logger.warning("Failed to write tool audit log: %s", exc)
 
@@ -141,6 +144,7 @@ def run_react_node(
     total_cost = 0.0
     total_tin = 0
     total_tout = 0
+    all_tool_calls: list[dict[str, Any]] = []
     turn = 0
     last_resp: Response | None = None
 
@@ -187,7 +191,10 @@ def run_react_node(
             t0 = time.time()
             if parse_error:
                 res = ToolResult(
-                    output=f"Error: malformed JSON arguments for tool '{tool_name}': {parse_error}. Please provide valid JSON parameters.",
+                    output=(
+                        f"Error: malformed JSON arguments for tool '{tool_name}': {parse_error}. "
+                        "Please provide valid JSON parameters."
+                    ),
                     error=True,
                 )
             else:
@@ -201,6 +208,7 @@ def run_react_node(
                     pass
 
             _log_audit(audit_file, node, model.name, tool_name, args, res, duration)
+            all_tool_calls.append(tc)
 
             messages.append({
                 "role": "tool",
@@ -210,7 +218,7 @@ def run_react_node(
 
         turn += 1
 
-    return Response(last_resp.text if last_resp else "", total_tin, total_tout, total_cost)
+    return Response(last_resp.text if last_resp else "", total_tin, total_tout, total_cost, tool_calls=all_tool_calls)
 
 
 def run_genome(
@@ -257,7 +265,7 @@ def run_genome(
                 need.add(p)
                 stack.append(p)
     outputs: dict[int, str] = {}
-    cost, calls = 0.0, 0
+    cost, calls, total_tool_calls = 0.0, 0, 0
     ctx_env = context or ExecutionContext()
 
     def call(job: tuple[int, str, ModelSpec]) -> Response:
@@ -295,6 +303,7 @@ def run_genome(
             if node_cache is not None and key in node_cache:
                 r = node_cache[key]
                 outputs[i], cost = r.text, cost + r.cost
+                total_tool_calls += len(r.tool_calls)
             else:
                 jobs.append((i, prompt, model))
         if len(jobs) > 1 and max_workers > 1:
@@ -304,8 +313,12 @@ def run_genome(
             results = [call(job) for job in jobs]
         for (i, prompt, model), r in zip(jobs, results):
             calls += 1
+            total_tool_calls += len(r.tool_calls)
             if node_cache is not None:
                 node_cache[(i, model, sample, prompt)] = r
             outputs[i], cost = r.text, cost + r.cost
     outputs = dict(sorted(outputs.items()))
-    return RunResult(extract_answer(outputs[g.n - 1]), cost, calls, outputs)
+    return RunResult(
+        extract_answer(outputs[g.n - 1]), cost, calls, outputs,
+        llm_calls=calls, tool_calls=total_tool_calls,
+    )

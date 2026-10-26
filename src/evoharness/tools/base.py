@@ -1,6 +1,7 @@
 """Base tool interfaces, execution context, path validation, and registry."""
 from __future__ import annotations
 
+import re
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -49,32 +50,25 @@ def truncate_output(
 
 
 
-SENSITIVE_ENV_KEYS = {
-    "LLM_API_KEY",
-    "OPENAI_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "OPENROUTER_API_KEY",
-    "KIMI_API_KEY",
-    "GROK_API_KEY",
-}
+SENSITIVE_ENV_PATTERN = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL|PRIVATE)", re.I)
 DANGEROUS_ENV_PREFIXES = ("LD_", "BASH_")
 DANGEROUS_ENV_KEYS = {"PYTHONPATH"}
 
 
 def sanitize_env(base_env: dict[str, str], overrides: dict[str, str] | None = None) -> dict[str, str]:
-    """Sanitize environment variables for subprocess execution."""
+    """Sanitize environment variables for subprocess execution using pattern matching."""
     env = dict(base_env)
     if overrides:
         for k, v in overrides.items():
             if k in DANGEROUS_ENV_KEYS or any(k.startswith(p) for p in DANGEROUS_ENV_PREFIXES):
                 continue
+            if SENSITIVE_ENV_PATTERN.search(k):
+                continue
             env[k] = v
     return {
         k: v
         for k, v in env.items()
-        if k not in SENSITIVE_ENV_KEYS
+        if not SENSITIVE_ENV_PATTERN.search(k)
         and not any(k.startswith(p) for p in DANGEROUS_ENV_PREFIXES)
         and k not in DANGEROUS_ENV_KEYS
     }
@@ -85,6 +79,8 @@ class PathGuard:
     @staticmethod
     def resolve_and_verify(path_str: str | Path, cwd: str | Path) -> Path:
         root = Path(cwd).resolve()
+        if root == Path("/"):
+            raise ValueError("Root directory '/' is not permitted as a tool workspace")
         target = (root / path_str).resolve()
         try:
             if not target.is_relative_to(root):
@@ -96,7 +92,7 @@ class PathGuard:
             if root != target and root not in target.parents:
                 raise ValueError(
                     f"Path traversal detected: '{path_str}' escapes workspace root '{root}'"
-                )
+                ) from None
         return target
 
 

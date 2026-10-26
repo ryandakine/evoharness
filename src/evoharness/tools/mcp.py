@@ -5,10 +5,12 @@ import atexit
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import threading
-from concurrent.futures import Future, TimeoutError as FuturesTimeoutError
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
 
@@ -78,20 +80,24 @@ class MCPStdioClient:
         self._stdout_thread.start()
 
         # Perform MCP initialization handshake
-        init_res = self._request(
-            "initialize",
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "evoharness", "version": "0.3.0"},
-            },
-            timeout=timeout,
-        )
-        if "error" in init_res:
-            raise RuntimeError(f"MCP initialization failed: {init_res['error']}")
+        try:
+            init_res = self._request(
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "evoharness", "version": "0.3.0"},
+                },
+                timeout=timeout,
+            )
+            if "error" in init_res:
+                raise RuntimeError(f"MCP initialization failed: {init_res['error']}")
 
-        # Mandatory notifications/initialized
-        self._notify("notifications/initialized", {})
+            # Mandatory notifications/initialized
+            self._notify("notifications/initialized", {})
+        except Exception:
+            self.close()
+            raise
 
     def _drain_stderr(self) -> None:
         if not self.proc or not self.proc.stderr:
@@ -165,7 +171,7 @@ class MCPStdioClient:
         except FuturesTimeoutError:
             with self._pending_lock:
                 self._pending.pop(req_id, None)
-            raise TimeoutError(f"MCP request {method} (id={req_id}) timed out after {timeout}s")
+            raise TimeoutError(f"MCP request {method} (id={req_id}) timed out after {timeout}s") from None
 
     def list_tools(self, timeout: float = 30.0) -> list[dict[str, Any]]:
         res = self._request("tools/list", {}, timeout=timeout)
@@ -244,7 +250,9 @@ class MCPToolAdapter(Tool):
     def __init__(self, server_name: str, tool_def: dict[str, Any], client: MCPStdioClient) -> None:
         self.server_name = server_name
         self.mcp_name = tool_def["name"]
-        self.name = f"mcp__{server_name}__{self.mcp_name}"
+        safe_server = re.sub(r"[^a-zA-Z0-9_]", "_", server_name)
+        safe_tool = re.sub(r"[^a-zA-Z0-9_]", "_", self.mcp_name)
+        self.name = f"mcp__{safe_server}__{safe_tool}"[:64]
         self.description = tool_def.get("description") or f"MCP tool '{self.mcp_name}' from server '{server_name}'"
         self.parameters = _sanitize_schema(tool_def.get("inputSchema"))
         self.client = client
