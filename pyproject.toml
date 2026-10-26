@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-api = ["litellm>=1.60,<2", "python-dotenv>=1,<2"]
+api = ["litellm>=1.60,<2", "python-dotenv>=1,<2", "mcp>=1.0.0"]
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]

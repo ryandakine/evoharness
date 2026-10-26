@@ -21,10 +21,13 @@ class Genome:
     roles: list[int]
     models: list[int]
     edges: set[tuple[int, int]] = field(default_factory=set)
+    tools: list[list[str]] | None = None
 
     def __post_init__(self):
         if not self.roles or len(self.roles) != len(self.models):
             raise ValueError("roles and models must have the same nonzero length")
+        if self.tools is not None and len(self.tools) != len(self.roles):
+            raise ValueError("tools must have the same length as roles/models if specified")
         if any(not isinstance(i, int) or i < 0 for i in self.roles + self.models):
             raise ValueError("role and model indices must be nonnegative integers")
         for e in self.edges:
@@ -50,25 +53,38 @@ class Genome:
         return sorted(need)
 
     def copy(self) -> Genome:
-        return Genome(list(self.roles), list(self.models), set(self.edges))
+        return Genome(
+            list(self.roles),
+            list(self.models),
+            set(self.edges),
+            tools=[list(t) for t in self.tools] if self.tools is not None else None,
+        )
 
     def key(self) -> tuple:
-        return (tuple(self.roles), tuple(self.models), tuple(sorted(self.edges)))
+        tools_key = tuple(tuple(t) for t in self.tools) if self.tools is not None else None
+        return (tuple(self.roles), tuple(self.models), tuple(sorted(self.edges)), tools_key)
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-ready form; see from_dict."""
-        return {"roles": list(self.roles), "models": list(self.models),
-                "edges": [list(e) for e in sorted(self.edges)]}
+        d: dict[str, Any] = {
+            "roles": list(self.roles),
+            "models": list(self.models),
+            "edges": [list(e) for e in sorted(self.edges)],
+        }
+        if self.tools is not None:
+            d["tools"] = [list(t) for t in self.tools]
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Genome:
         try:
             roles, models = list(data["roles"]), list(data["models"])
             edges = {(int(a), int(b)) for a, b in data.get("edges", [])}
+            tools = [list(t) for t in data["tools"]] if "tools" in data and data["tools"] is not None else None
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("genome dict needs 'roles', 'models' and optional 'edges' "
                              "as [source, target] pairs") from exc
-        return cls(roles, models, edges)
+        return cls(roles, models, edges, tools=tools)
 
     def validate_against(self, n_roles: int, n_models: int) -> None:
         """Raise if any node refers to a role or model index outside the given tables."""

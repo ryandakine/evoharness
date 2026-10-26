@@ -1,20 +1,9 @@
-"""Command line: run a swarm of agents on one prompt with any LiteLLM-supported model.
-
-    evoharness --prompt "What is 17 * 23?"
-    evoharness --preset pipeline --prompt "..." --json
-    evoharness --spec my_swarm.json --prompt "..."
-
-A spec file describes the graph (see examples/swarm_spec.json)::
-
-    {"roles": ["...", "..."],                 # instruction text per role
-     "nodes": [{"role": 0}, {"role": 1}],     # one entry per agent; last node is the output
-     "edges": [[0, 1]],                       # [from, to] with from < to
-     "models": ["provider/model", ...]}       # optional; nodes may set "model": index
-"""
+"""Command-line interface for evoharness."""
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -26,6 +15,20 @@ from . import __version__
 from .executor import AgentError, RunResult, Task, run_genome
 from .genome import Genome
 from .llm import APIBackend, BudgetExceeded, EmptyResponse, ModelSpec
+from .tools.base import ExecutionContext, ToolRegistry, ToolResult
+from .tools.builtin import BashTool, EditFileTool, ReadFileTool, WriteFileTool
+from .tools.mcp import MCPConfigLoader, MCPToolAdapter, get_mcp_pool
+
+logger = logging.getLogger("evoharness.cli")
+
+
+def _optional(cast):
+    def parse(val: str):
+        if val.lower() == "omit":
+            return None
+        return cast(val)
+    return parse
+
 
 FINAL = "Produce the final response. Finish with 'Answer: <final answer>'."
 
@@ -69,6 +72,22 @@ PRESETS: dict[str, dict[str, Any]] = {
         "nodes": [0, 1, 2, 3],
         "edges": [[0, 3], [1, 3], [2, 3]],
     },
+    "audit": {
+        "description": "Researcher (read/bash) -> Implementer (edit/write) -> Verifier (bash) -> Judge.",
+        "roles": [
+            "You are a researcher. Inspect the workspace, read files, or run read-only commands to diagnose the issue.",
+            "You are an implementer. Write or edit files to fix the issue or implement the requirement.",
+            "You are a verifier. Run tests or build commands via bash to verify the fix works. Report pass/fail.",
+            "You are the judge. Review the audit trace and summarize findings. Finish with 'Answer: <final answer>'.",
+        ],
+        "nodes": [
+            {"role": 0, "tools": ["read_file", "bash"]},
+            {"role": 1, "tools": ["read_file", "write_file", "edit_file"]},
+            {"role": 2, "tools": ["read_file", "bash"]},
+            {"role": 3, "tools": []},
+        ],
+        "edges": [[0, 1], [1, 2], [2, 3], [0, 3]],
+    },
 }
 
 
@@ -91,31 +110,31 @@ def load_spec(data: dict[str, Any], default_model: ModelSpec) -> tuple[Genome, l
     if not isinstance(nodes, list) or not nodes:
         raise ValueError("spec needs a non-empty 'nodes' list")
     models = [_model_from(m, default_model) for m in data["models"]] if data.get("models") else [default_model]
-    node_roles, node_models = [], []
+    node_roles, node_models, node_tools = [], [], []
+    has_tools = False
     for k, node in enumerate(nodes):
         if isinstance(node, int):
-            role, model = node, 0
+            role, model, tools_cfg = node, 0, None
         elif isinstance(node, dict):
-            role, model = node.get("role"), node.get("model", 0)
+            role, model, tools_cfg = node.get("role"), node.get("model", 0), node.get("tools")
         else:
             raise ValueError(f"node {k} must be a role index or an object with 'role'")
         if not isinstance(role, int) or not isinstance(model, int):
             raise ValueError(f"node {k}: 'role' and 'model' must be integer indices")
         node_roles.append(role)
         node_models.append(model)
+        if tools_cfg is not None:
+            has_tools = True
+            node_tools.append(list(tools_cfg))
+        else:
+            node_tools.append([])
     try:
         edges = {(int(a), int(b)) for a, b in data.get("edges", [])}
     except (TypeError, ValueError) as exc:
         raise ValueError("'edges' must be a list of [from, to] pairs") from exc
-    genome = Genome(node_roles, node_models, edges)
+    genome = Genome(node_roles, node_models, edges, tools=node_tools if has_tools else None)
     genome.validate_against(len(roles), len(models))
     return genome, roles, models
-
-
-def _optional(cast):
-    def parse(value: str):
-        return None if value == "omit" else cast(value)
-    return parse
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,6 +159,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--quiet", action="store_true", help="print only the final answer")
     p.add_argument("--list-presets", action="store_true", help="list built-in swarms and exit")
     p.add_argument("--version", action="version", version=f"evoharness {__version__}")
+
+    # Tool options
+    p.add_argument("--tools", default="none", help="tools available: none, all, builtin, bash, files, mcp, or comma-separated list")
+    p.add_argument("--mcp", help="path to MCP config file (.mcp.json)")
+    p.add_argument("--cwd", help="workspace directory for tools (default: current directory)")
+    p.add_argument("--max-tool-turns", type=int, default=10, help="max tool iterations per agent node (default: 10)")
+    p.add_argument("--dry-run", action="store_true", help="simulate tool mutations without modifying files")
+    p.add_argument("--audit-file", help="path to JSON lines tool audit file (default: ./.evoharness/audit.jsonl when tools active)")
     return p
 
 
@@ -152,6 +179,43 @@ def _load_env(path: Path) -> None:
         raise SystemExit('Install API dependencies: python -m pip install -e ".[api]"') from exc
     # Keep environment overrides; do not expand ${...} inside secrets.
     load_dotenv(path, override=False, interpolate=False)
+
+
+def _setup_tools(tools_arg: str, mcp_config: str | None, cwd: Path, dry_run: bool) -> tuple[ToolRegistry | None, ExecutionContext]:
+    clean_arg = tools_arg.strip().lower()
+    ctx = ExecutionContext(cwd=cwd, dry_run=dry_run)
+    if clean_arg in ("none", ""):
+        return None, ctx
+
+    registry = ToolRegistry()
+    parts = [s.strip() for s in clean_arg.split(",")]
+
+    if "all" in parts or "builtin" in parts or "bash" in parts:
+        registry.register(BashTool())
+    if "all" in parts or "builtin" in parts or "files" in parts:
+        registry.register(ReadFileTool())
+        registry.register(WriteFileTool())
+        registry.register(EditFileTool())
+
+    if "all" in parts or "mcp" in parts or mcp_config:
+        cfg_path = Path(mcp_config) if mcp_config else (cwd / ".mcp.json")
+        if not cfg_path.is_file() and not mcp_config:
+            cfg_path = Path.home() / ".claude" / "mcp.json"
+        if cfg_path.is_file():
+            servers = MCPConfigLoader.load(cfg_path)
+            pool = get_mcp_pool()
+            for s_name, s_cfg in servers.items():
+                cmd = s_cfg.get("command")
+                if cmd:
+                    args = s_cfg.get("args", [])
+                    env = s_cfg.get("env")
+                    try:
+                        client = pool.get_or_create(s_name, cmd, args, env, cwd=cwd)
+                        for t_def in client.list_tools(timeout=10.0):
+                            registry.register(MCPToolAdapter(s_name, t_def, client))
+                    except Exception as exc:
+                        logger.warning("Failed to initialize MCP server '%s': %s", s_name, exc)
+    return registry, ctx
 
 
 def _report(result: RunResult, roles: list[str], genome: Genome, models: list[ModelSpec],
@@ -208,17 +272,50 @@ def main(argv: Sequence[str] | None = None, env_file: str | Path | None = None) 
     except (OSError, ValueError) as exc:
         parser.error(f"bad swarm spec: {exc}")
 
+    cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
+    tools_arg = args.tools
+    if tools_arg == "none" and genome.tools is not None and any(genome.tools):
+        # Auto-enable tools if the spec explicitly defines node tools
+        tools_arg = "all"
+
+    tool_registry, ctx = _setup_tools(tools_arg, args.mcp, cwd, args.dry_run)
+    audit_path = Path(args.audit_file) if args.audit_file else (cwd / ".evoharness" / "audit.jsonl" if tool_registry else None)
+
     backend = APIBackend(api_base=args.api_base, api_key=os.environ.get("LLM_API_KEY") or None,
                          max_tokens=args.max_tokens, temperature=args.temperature,
                          timeout=args.timeout, retries=args.retries)
     if not args.json and not args.quiet:
         label = args.spec or f"preset '{args.preset}'"
         names = ", ".join(sorted({m.name for m in models}))
-        print(f"Running {label}: {genome.n} agents, {len(genome.edges)} edges, model(s) {names} ...",
+        tool_desc = f", tools: {len(tool_registry.list_tools())} loaded" if tool_registry else ""
+        print(f"Running {label}: {genome.n} agents, {len(genome.edges)} edges, model(s) {names}{tool_desc} ...",
               file=sys.stderr, flush=True)
+
+    def _on_tool_call(node: int, tool_name: str, t_args: dict[str, Any], res: ToolResult) -> None:
+        if not args.quiet and not args.json:
+            status = "[error]" if res.error else ("[dry-run]" if res.is_dry_run else "[ok]")
+            arg_summary = json.dumps(t_args, ensure_ascii=False)
+            if len(arg_summary) > 70:
+                arg_summary = arg_summary[:67] + "..."
+            print(f"  -> Agent {node} called {tool_name}({arg_summary}) {status}", file=sys.stderr, flush=True)
+
     start = time.monotonic()
+    node_tools_map = {i: genome.tools[i] for i in range(genome.n)} if genome.tools is not None else None
     try:
-        result = run_genome(genome, Task(args.prompt, ""), backend, models, roles, max_workers=args.parallel)
+        result = run_genome(
+            genome,
+            Task(args.prompt, ""),
+            backend,
+            models,
+            roles,
+            max_workers=args.parallel,
+            tool_registry=tool_registry,
+            node_tools=node_tools_map,
+            context=ctx,
+            max_tool_turns=args.max_tool_turns,
+            on_tool_call=_on_tool_call,
+            audit_file=audit_path,
+        )
     except AgentError as exc:
         print(f"error: {exc}", file=sys.stderr)
         if isinstance(exc.__cause__, EmptyResponse):

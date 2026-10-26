@@ -1,4 +1,4 @@
-"""LLM backends, response cache, and spend budget."""
+"""LLM backends, response cache, spend budget, and tool-calling support."""
 from __future__ import annotations
 
 import hashlib
@@ -8,9 +8,9 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,7 @@ class Response:
     input_tokens: int
     output_tokens: int
     cost: float
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Backend(Protocol):
@@ -85,7 +86,13 @@ class CachedBackend:
             for line in fh:
                 try:
                     e = json.loads(line)
-                    r = Response(e["text"], int(e["input_tokens"]), int(e["output_tokens"]), float(e["cost"]))
+                    r = Response(
+                        e["text"],
+                        int(e["input_tokens"]),
+                        int(e["output_tokens"]),
+                        float(e["cost"]),
+                        tool_calls=e.get("tool_calls", []),
+                    )
                     self._cache[e["key"]] = (r, float(e["price_in"]), float(e["price_out"]))
                 except (ValueError, KeyError, TypeError):
                     continue  # tolerate a truncated or foreign line
@@ -95,7 +102,8 @@ class CachedBackend:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         entry = dict(key=key, text=r.text, input_tokens=r.input_tokens, output_tokens=r.output_tokens,
-                     cost=r.cost, price_in=model.price_in, price_out=model.price_out)
+                     cost=r.cost, price_in=model.price_in, price_out=model.price_out,
+                     tool_calls=r.tool_calls)
         with self._path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
 
@@ -111,7 +119,8 @@ class CachedBackend:
                 r, pin, pout = hit
                 if (pin, pout) != (model.price_in, model.price_out):
                     r = Response(r.text, r.input_tokens, r.output_tokens,
-                                 price(model, r.input_tokens, r.output_tokens))
+                                 price(model, r.input_tokens, r.output_tokens),
+                                 tool_calls=r.tool_calls)
                 return r
             if self.budget is not None and self.spent >= self.budget:
                 raise BudgetExceeded(f"spent ${self.spent:.4f} >= cap ${self.budget:.4f}")
@@ -122,6 +131,21 @@ class CachedBackend:
             self._cache[key] = (r, model.price_in, model.price_out)
             self._persist(key, r, model)
         return r
+
+    def complete_messages(
+        self,
+        messages: list[dict[str, Any]],
+        model: ModelSpec,
+        sample: int = 0,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+    ) -> Response:
+        if hasattr(self.inner, "complete_messages"):
+            return getattr(self.inner, "complete_messages")(
+                messages, model, sample, tools=tools, tool_choice=tool_choice
+            )
+        prompt = "\n".join(m.get("content", "") for m in messages if m.get("content"))
+        return self.complete(prompt, model, sample)
 
 
 _TRANSIENT = {"RateLimitError", "RouterRateLimitError", "Timeout", "APITimeoutError", "APIConnectionError",
@@ -139,17 +163,7 @@ def is_transient(exc: BaseException) -> bool:
 
 
 class APIBackend:
-    """Provider-neutral text completions through the optional LiteLLM SDK.
-
-    Use provider/model names, or openai/<model-id> with a compatible api_base.
-    Credentials fall back to LiteLLM's native provider environment discovery.
-    Per-model routes override backend defaults. sample is a cache discriminator,
-    not a portable provider seed. Missing usage is rejected to avoid false costs.
-
-    Transient failures (rate limits, timeouts, 5xx, empty replies) are retried
-    up to ``retries`` times with exponential backoff starting at
-    ``retry_backoff`` seconds. Other errors propagate immediately.
-    """
+    """Provider-neutral text completions through the optional LiteLLM SDK."""
 
     def __init__(self, *, api_base: str | None = None, api_key: str | None = None,
                  max_tokens: int | None = 512, temperature: float | None = 0.7,
@@ -176,10 +190,20 @@ class APIBackend:
             raise ValueError("extra_params cannot override routing, credentials, messages, "
                              "streaming, timeout, or retries")
 
-    def _params(self, prompt: str, model: ModelSpec) -> dict:
+    def _params(
+        self,
+        messages: list[dict[str, Any]],
+        model: ModelSpec,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+    ) -> dict:
         params = dict(self.extra_params)
-        params.update(model=model.name, messages=[{"role": "user", "content": prompt}],
+        params.update(model=model.name, messages=messages,
                       stream=False, timeout=self.timeout, num_retries=0)
+        if tools:
+            params["tools"] = tools
+            if tool_choice:
+                params["tool_choice"] = tool_choice
         if self.max_tokens is not None:
             params.setdefault("max_tokens", self.max_tokens)
         if self.temperature is not None:
@@ -192,8 +216,6 @@ class APIBackend:
             if not api_key:
                 raise ValueError(f"missing credential environment variable: {model.api_key_env}")
         elif model.api_base is not None and model.api_base != self.api_base:
-            # A new per-model endpoint must not inherit a different endpoint's
-            # backend credential. Native provider discovery may still apply.
             api_key = None
         else:
             api_key = self._api_key
@@ -205,20 +227,47 @@ class APIBackend:
         result = self._completion(**params)
         if not getattr(result, "choices", None):
             raise EmptyResponse("model API returned no completion choices")
-        content = result.choices[0].message.content
+        msg = result.choices[0].message
+        content = msg.content
         if isinstance(content, list):
             content = "".join(block.get("text", "") for block in content if isinstance(block, dict))
-        if not isinstance(content, str) or not content.strip():
-            raise EmptyResponse("model API returned no text; choose a text-capable model "
+        text = content if isinstance(content, str) else ""
+
+        tool_calls: list[dict[str, Any]] = []
+        raw_tc = getattr(msg, "tool_calls", None)
+        if raw_tc:
+            for tc in raw_tc:
+                fn = getattr(tc, "function", None)
+                fn_name = getattr(fn, "name", "") if fn else ""
+                fn_args = getattr(fn, "arguments", "{}") if fn else "{}"
+                tc_id = getattr(tc, "id", "") or f"call_{len(tool_calls)}"
+                tool_calls.append({
+                    "id": tc_id,
+                    "type": "function",
+                    "function": {
+                        "name": fn_name,
+                        "arguments": fn_args,
+                    },
+                })
+
+        if not text.strip() and not tool_calls:
+            raise EmptyResponse("model API returned no text or tool calls; choose a text-capable model "
                                 "or increase its output limit")
         usage = getattr(result, "usage", None)
         tin, tout = getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None)
         if not isinstance(tin, int) or not isinstance(tout, int) or tin < 0 or tout < 0:
             raise ValueError("model API omitted valid token usage; cannot report inference cost")
-        return Response(content, tin, tout, price(model, tin, tout))
+        return Response(text, tin, tout, price(model, tin, tout), tool_calls=tool_calls)
 
-    def complete(self, prompt: str, model: ModelSpec, sample: int = 0) -> Response:
-        params = self._params(prompt, model)
+    def complete_messages(
+        self,
+        messages: list[dict[str, Any]],
+        model: ModelSpec,
+        sample: int = 0,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+    ) -> Response:
+        params = self._params(messages, model, tools=tools, tool_choice=tool_choice)
         attempt = 0
         while True:
             try:
@@ -229,15 +278,12 @@ class APIBackend:
                 self._sleep(self.retry_backoff * (2 ** attempt))
                 attempt += 1
 
+    def complete(self, prompt: str, model: ModelSpec, sample: int = 0) -> Response:
+        return self.complete_messages([{"role": "user", "content": prompt}], model, sample)
+
 
 class MockBackend:
-    """Deterministic offline backend for tests and demos. NOT a model of real LLM behavior.
-
-    P(correct) rises with model index and with the number of upstream inputs.
-    Model index is the position in ``model_names`` when given, otherwise the
-    order in which names are first seen (racy under max_workers > 1; pass
-    ``model_names`` for reproducible parallel runs).
-    """
+    """Deterministic offline backend for tests and demos. NOT a model of real LLM behavior."""
 
     def __init__(self, answers: dict[str, str], base: list[float], input_bonus: float = 0.06,
                  model_names: list[str] | None = None):
@@ -260,3 +306,14 @@ class MockBackend:
         text = f"Answer: {ref if ok else 'wrong'}"
         tin, tout = len(prompt) // 4, len(text) // 4 + 1
         return Response(text, tin, tout, price(model, tin, tout))
+
+    def complete_messages(
+        self,
+        messages: list[dict[str, Any]],
+        model: ModelSpec,
+        sample: int = 0,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+    ) -> Response:
+        prompt = "\n".join(m.get("content", "") for m in messages if m.get("content"))
+        return self.complete(prompt, model, sample)
