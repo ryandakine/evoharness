@@ -80,6 +80,35 @@ and `--price-in` / `--price-out` in USD per million tokens to get a cost estimat
 
 `examples/run_swarm.py` and `run_swarm.ps1` are thin wrappers around the same command.
 
+### Cursor + Claude Code agents
+
+Coding agents will not call this harness unless you wire them. This repo ships that wiring:
+
+| Piece | Path |
+| --- | --- |
+| Canonical skill | `skills/evoharness-swarm/SKILL.md` |
+| Cursor (project) | `.cursor/skills/evoharness-swarm/SKILL.md` |
+| Claude Code (project) | `.claude/skills/evoharness-swarm/SKILL.md` |
+| Agent pointers | `AGENTS.md`, `CLAUDE.md` |
+| CLI wrappers | `bin/swarm`, `bin/swarm-review`, `bin/swarm-debate`, `bin/swarm-audit`, `bin/swarm-committee` |
+
+```bash
+# Second opinion (committee, JSON) — what agents should run by default
+bin/swarm review "Critique this plan for missing concurrency hazards"
+
+# Debate / audit (audit enables builtin tools)
+bin/swarm debate --file path/to/plan.md
+bin/swarm audit --cwd "$PWD" "Inspect tests and report failures"
+
+# Optional: install skill + wrappers into your user dirs (other repos)
+scripts/install-agent-skills.sh          # Claude Code + Cursor + ~/.local/bin as eh-swarm*
+scripts/install-agent-skills.sh --claude # Claude Code only
+```
+
+Wrappers install as `eh-swarm` so a personal `~/bin/swarm` is never overwritten. Agents in this repo should call `bin/swarm`.
+
+Use swarms for second opinions, committee judgment, debate, and tool audits. Keep ordinary implement/fix/refactor work on the primary coding agent.
+
 ### Writing your own swarm
 
 A spec is a JSON file with the roles, one node per agent, and edges from lower to

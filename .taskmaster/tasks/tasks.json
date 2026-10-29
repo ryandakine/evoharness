@@ -1,0 +1,27 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": "1",
+        "title": "Package agent integration for Cursor and Claude Code",
+        "description": "Add shared swarm skill under .cursor/skills and .claude/skills, bin/swarm wrappers, AGENTS.md/CLAUDE.md pointers, and README agent section so Cursor Agent and Claude Code actually invoke evoharness for second-opinion / debate / committee / audit jobs.",
+        "status": "done",
+        "priority": "high",
+        "dependencies": [],
+        "details": "Canonical wrappers: swarm (subcommand or --preset), swarm-review (committee), swarm-debate, swarm-audit. Skills auto-trigger on second opinion, committee review, plan critique, adversarial debate — not routine coding. README documents install for both IDEs.",
+        "testStrategy": "bin/swarm --help; wrappers resolve evoharness; skill files exist in both IDE paths with matching triggers; README section present.",
+        "subtasks": [],
+        "updatedAt": "2026-10-29T02:30:30.859Z"
+      }
+    ],
+    "metadata": {
+      "version": "1.0.0",
+      "lastModified": "2026-10-29T02:30:30.859Z",
+      "taskCount": 1,
+      "completedCount": 1,
+      "tags": [
+        "master"
+      ]
+    }
+  }
+}

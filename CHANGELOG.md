@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Agent packaging for **Cursor** and **Claude Code**: shared `evoharness-swarm` skill
+  (`skills/`, `.cursor/skills/`, `.claude/skills/`), `AGENTS.md` / `CLAUDE.md` pointers,
+  `bin/swarm` (+ `swarm-review` / `swarm-debate` / `swarm-audit` / `swarm-committee`
+  aliases), and `scripts/install-agent-skills.sh` for user-level install.
+
 ## 0.2.0 (fork)
 
 Focus: make the harness dependable against real model APIs, and usable from the

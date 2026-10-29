@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Agent-friendly wrapper around evoharness (Cursor + Claude Code).
+
+Portable cousin of a personal ~/bin/swarm: same presets and flags, but resolves
+the harness from this repo / PATH and never hardcodes API keys or proxy URLs.
+
+Usage:
+    bin/swarm review "second opinion on this plan"
+    bin/swarm -c "compare two approaches" --json
+    bin/swarm -a --cwd . "audit failing tests"
+    bin/swarm-review "…"          # basename aliases
+    git diff | bin/swarm committee
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import select
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+ALIAS_TO_PRESET = {
+    "swarm-review": "committee",
+    "swarm-committee": "committee",
+    "swarm-debate": "debate",
+    "swarm-audit": "audit",
+}
+
+# Subcommands accepted as argv[1] (agent-oriented names).
+WORD_TO_PRESET = {
+    "review": "committee",
+    "committee": "committee",
+    "debate": "debate",
+    "pipeline": "pipeline",
+    "audit": "audit",
+    "ask": "solo",
+    "solo": "solo",
+}
+
+
+def resolve_evoharness() -> list[str]:
+    import shutil
+
+    venv_bin = ROOT / ".venv" / "bin" / "evoharness"
+    if venv_bin.is_file() and os.access(venv_bin, os.X_OK):
+        return [str(venv_bin)]
+    found = shutil.which("evoharness")
+    if found:
+        return [found]
+    venv_py = ROOT / ".venv" / "bin" / "python"
+    if venv_py.is_file():
+        return [str(venv_py), "-m", "evoharness"]
+    sys.exit(
+        "evoharness not found. From the repo run: python -m pip install -e '.[api]'"
+    )
+
+
+def build_context(files: list[str]) -> str:
+    chunks: list[str] = []
+    for path in files:
+        try:
+            content = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            sys.exit(f"swarm: cannot read {path}: {e}")
+        chunks.append(f"File: {path}\n<file>\n{content}\n</file>")
+    return "\n\n".join(chunks)
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    self_name = Path(sys.argv[0]).name
+
+    if argv and argv[0] in {"-h", "--help"}:
+        # Fall through to argparse help after mild rewrite.
+        pass
+    elif argv and argv[0] == "list":
+        cmd = resolve_evoharness() + ["--list-presets"]
+        return subprocess.run(cmd).returncode
+    elif argv and argv[0] == "run":
+        cmd = resolve_evoharness() + argv[1:]
+        return subprocess.run(cmd).returncode
+
+    # Peel agent word-subcommand if present.
+    forced_preset: str | None = ALIAS_TO_PRESET.get(self_name)
+    if argv and argv[0] in WORD_TO_PRESET and not argv[0].startswith("-"):
+        forced_preset = WORD_TO_PRESET[argv[0]]
+        argv = argv[1:]
+
+    ap = argparse.ArgumentParser(
+        prog="swarm",
+        description="Run an evoharness swarm (agent-friendly wrapper).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Agents: prefer `swarm review \"…\"` or `swarm -c --json \"…\"`. "
+        "Install user copies with scripts/install-agent-skills.sh (links as eh-swarm).",
+    )
+    ap.add_argument("message", nargs="*", help="Task for the swarm. Or pipe stdin / use -f.")
+    ap.add_argument("-f", "--file", action="append", default=[], dest="files", help="Context file (repeatable).")
+    ap.add_argument("--prompt-file", help="Read the entire prompt from this file.")
+
+    preset_grp = ap.add_mutually_exclusive_group()
+    preset_grp.add_argument("-d", "--debate", action="store_const", const="debate", dest="preset")
+    preset_grp.add_argument("-c", "--committee", action="store_const", const="committee", dest="preset")
+    preset_grp.add_argument("-p", "--pipeline", action="store_const", const="pipeline", dest="preset")
+    preset_grp.add_argument("-a", "--audit", action="store_const", const="audit", dest="preset")
+    preset_grp.add_argument("-s", "--solo", action="store_const", const="solo", dest="preset")
+    preset_grp.add_argument("--spec", help="Custom JSON swarm spec path.")
+
+    ap.add_argument("-m", "--model", help="LiteLLM provider/model (default: $LLM_MODEL / .env).")
+    ap.add_argument("--api-base", help="OpenAI-compatible base URL (default: $LLM_API_BASE).")
+    ap.add_argument("--env-file", help="dotenv path for evoharness.")
+    ap.add_argument("--tools", default=None, help="none|all|builtin|bash|files|mcp|comma-list")
+    ap.add_argument("--mcp", help="MCP config JSON.")
+    ap.add_argument("--cwd", help="Workspace root for tools.")
+    ap.add_argument("--max-tool-turns", type=int, default=None)
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--audit-file", help="Tool audit JSONL path.")
+    ap.add_argument("-q", "--quiet", action="store_true", help="Final answer only.")
+    ap.add_argument("--json", action="store_true", default=None, help="JSON report (default on for agents).")
+    ap.add_argument("--text", action="store_true", help="Human text output (disables default --json).")
+    ap.add_argument("--parallel", type=int, default=None)
+    ap.add_argument("--timeout", type=float, default=None)
+    ap.add_argument("--retries", type=int, default=None)
+
+    args = ap.parse_args(argv)
+
+    prompt = " ".join(args.message).strip()
+    if args.prompt_file:
+        try:
+            prompt = Path(args.prompt_file).read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            sys.exit(f"swarm: cannot read --prompt-file: {e}")
+
+    stdin_has_data = not sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]
+    if stdin_has_data:
+        piped = sys.stdin.read().strip()
+        if piped:
+            prompt = f"{prompt}\n\n{piped}".strip() if prompt else piped
+
+    if args.files:
+        ctx = build_context(args.files)
+        prompt = f"Context files:\n{ctx}\n\n---\n\n{prompt}".strip() if prompt else ctx
+
+    if not prompt:
+        ap.error("no message provided (give arguments, --prompt-file, -f, or stdin)")
+
+    preset = forced_preset or args.preset or "committee"
+    want_json = True
+    if args.text or args.quiet:
+        want_json = False
+    elif args.json is True:
+        want_json = True
+    elif args.json is False:
+        want_json = False
+
+    cmd = resolve_evoharness() + ["--prompt", prompt]
+    if args.spec:
+        cmd.extend(["--spec", args.spec])
+    else:
+        cmd.extend(["--preset", preset])
+
+    if args.model:
+        cmd.extend(["--model", args.model])
+    if args.api_base:
+        cmd.extend(["--api-base", args.api_base])
+    if args.env_file:
+        cmd.extend(["--env-file", args.env_file])
+
+    tools = args.tools
+    if tools is None and preset == "audit":
+        tools = "builtin"
+    if tools and tools != "none":
+        cmd.extend(["--tools", tools])
+
+    if args.mcp:
+        cmd.extend(["--mcp", args.mcp])
+    if args.cwd:
+        cmd.extend(["--cwd", args.cwd])
+    if args.max_tool_turns is not None:
+        cmd.extend(["--max-tool-turns", str(args.max_tool_turns)])
+    if args.dry_run:
+        cmd.append("--dry-run")
+    if args.audit_file:
+        cmd.extend(["--audit-file", args.audit_file])
+    if args.parallel is not None:
+        cmd.extend(["--parallel", str(args.parallel)])
+    if args.timeout is not None:
+        cmd.extend(["--timeout", str(args.timeout)])
+    if args.retries is not None:
+        cmd.extend(["--retries", str(args.retries)])
+    if args.quiet:
+        cmd.append("--quiet")
+    elif want_json:
+        cmd.append("--json")
+
+    return subprocess.run(cmd).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())
