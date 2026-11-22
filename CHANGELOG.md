@@ -1,12 +1,42 @@
 # Changelog
 
-## Unreleased
+## 0.3.4
+
+Focus: Cursor & Claude Code agent integration and defense-in-depth security hardening
+across tool execution, caching, secret redaction, and MCP lifecycle.
 
 ### Added
 - Agent packaging for **Cursor** and **Claude Code**: shared `evoharness-swarm` skill
   (`skills/`, `.cursor/skills/`, `.claude/skills/`), `AGENTS.md` / `CLAUDE.md` pointers,
   `bin/swarm` (+ `swarm-review` / `swarm-debate` / `swarm-audit` / `swarm-committee`
-  aliases), and `scripts/install-agent-skills.sh` for user-level install.
+  aliases and `eh-` installed wrapper prefix support), and
+  `scripts/install-agent-skills.sh` for user-level install.
+- 86 offline tests (including `tests/test_hardening.py` covering tool allowlists,
+  budget enforcement, secret redaction, timeout/pipe cleanup, UTF-8 truncation,
+  MCP pool scoping, and mutating-tool cache bypass).
+
+### Security & Hardening
+- **Tool allowlist enforcement**: validate every model-requested tool call against
+  the active tool allowlist before dispatch.
+- **`--tools none` precedence & dry-run MCP guard**: honor explicit `--tools none`
+  over preset/MCP defaults and block mutating MCP calls during `--dry-run`.
+- **Thread-safe budget cap in `CachedBackend.complete_messages()`**: enforce budget
+  limits atomically across concurrent tool-calling agent loops.
+- **Structured dict key & JSON credential redaction**: scrub sensitive keys and
+  inline JSON secrets in tool arguments, outputs, and audit logs.
+- **Bounded `BashTool` timeout & pipe cleanup**: enforce hard execution timeouts
+  with reliable process teardown and pipe closure to prevent hangs/leaks.
+- **Strict UTF-8 byte truncation**: truncate large tool outputs safely on valid
+  UTF-8 character boundaries without splitting multibyte sequences.
+- **`MCPStdioClient` cleanup & pool scoping**: scope MCP server pools properly and
+  guarantee stdio subprocess cleanup on exit or error.
+- **Mutating-tool per-node cache bypass**: bypass response caching for nodes
+  executing mutating tools so side-effecting steps never serve stale replies.
+- **File mode preservation on atomic write/edit**: preserve existing file
+  permissions when atomically replacing files during write/edit tool operations.
+- **`eh-` wrapper alias routing**: strip the `eh-` prefix in `bin/swarm` so
+  installed `~/.local/bin/eh-swarm-*` symlinks route to the intended preset.
+- **Version alignment**: align package metadata and `evoharness.__version__` to `0.3.4`.
 
 ## 0.2.0 (fork)
 
