@@ -40,14 +40,22 @@ def truncate_output(
     if len(lines) <= (head_lines + tail_lines):
         # Truncate purely by bytes if lines are few but long
         cut = text[: max_bytes // 2] + "\n[... truncated ...]\n" + text[-max_bytes // 2 :]
-        return cut
+        result = cut
+    else:
+        head = "".join(lines[:head_lines])
+        tail = "".join(lines[-tail_lines:])
+        omitted_lines = len(lines) - head_lines - tail_lines
+        omitted_bytes = len(raw_bytes) - len(head.encode("utf-8")) - len(tail.encode("utf-8"))
+        marker = f"\n[... {omitted_lines} lines / {omitted_bytes} bytes truncated ...]\n"
+        result = f"{head}{marker}{tail}"
 
-    head = "".join(lines[:head_lines])
-    tail = "".join(lines[-tail_lines:])
-    omitted_lines = len(lines) - head_lines - tail_lines
-    omitted_bytes = len(raw_bytes) - len(head.encode("utf-8")) - len(tail.encode("utf-8"))
-    marker = f"\n[... {omitted_lines} lines / {omitted_bytes} bytes truncated ...]\n"
-    return f"{head}{marker}{tail}"
+    # Hard byte truncation guarantee: ensure encoded output strictly <= max_bytes
+    res_bytes = result.encode("utf-8", errors="replace")
+    if len(res_bytes) > max_bytes:
+        notice = f"\n[... output truncated to {max_bytes} bytes ...]\n".encode()
+        slice_len = max(0, max_bytes - len(notice))
+        result = res_bytes[:slice_len].decode("utf-8", errors="ignore") + notice.decode("utf-8")
+    return result
 
 
 
@@ -81,6 +89,9 @@ _INLINE_CRED_RE = re.compile(
     r"\s*(?:[:=]|\bis\b|\bwas\b)\s*\S+"
 )
 _BASIC_AUTH_URL_RE = re.compile(r"://[^/\s:@]+:[^/\s]+@")
+_JSON_CRED_RE = re.compile(
+    r'(?i)("(?:\w*_)?(?:password|passwd|secret|token|api[_-]?key|auth|bearer)"\s*:\s*)"(?:\\.|[^"\\])*"'
+)
 
 
 def redact_sensitive_text(text: str, env: dict[str, str] | None = None) -> str:
@@ -94,7 +105,10 @@ def redact_sensitive_text(text: str, env: dict[str, str] | None = None) -> str:
         if SENSITIVE_ENV_PATTERN.search(k) and isinstance(v, str) and len(v.strip()) >= 6:
             text = text.replace(v.strip(), "[REDACTED]")
 
-    # 2. Scrub standard auth patterns
+    # 2. Scrub JSON key-value credentials
+    text = _JSON_CRED_RE.sub(r'\1"[REDACTED]"', text)
+
+    # 3. Scrub standard auth patterns
     text = _AUTH_SCHEME_RE.sub(lambda m: f"{m.group(1)} [REDACTED]", text)
     text = _BASIC_AUTH_URL_RE.sub("://[REDACTED]@", text)
     text = _INLINE_CRED_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)

@@ -162,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Tool options
     p.add_argument(
-        "--tools", default="none",
+        "--tools", default=None,
         help="tools available: none, all, builtin, bash, files, mcp, or comma-separated list",
     )
     p.add_argument("--mcp", help="path to MCP config file (.mcp.json)")
@@ -206,23 +206,26 @@ def _setup_tools(
         registry.register(EditFileTool())
 
     if "all" in parts or "mcp" in parts or mcp_config:
-        cfg_path = Path(mcp_config) if mcp_config else (cwd / ".mcp.json")
-        if not cfg_path.is_file() and not mcp_config:
-            cfg_path = Path.home() / ".claude" / "mcp.json"
-        if cfg_path.is_file():
-            servers = MCPConfigLoader.load(cfg_path)
-            pool = get_mcp_pool()
-            for s_name, s_cfg in servers.items():
-                cmd = s_cfg.get("command")
-                if cmd:
-                    args = s_cfg.get("args", [])
-                    env = s_cfg.get("env")
-                    try:
-                        client = pool.get_or_create(s_name, cmd, args, env, cwd=cwd)
-                        for t_def in client.list_tools(timeout=10.0):
-                            registry.register(MCPToolAdapter(s_name, t_def, client))
-                    except Exception as exc:
-                        logger.warning("Failed to initialize MCP server '%s': %s", s_name, exc)
+        if dry_run:
+            logger.info("Dry-run enabled: skipping live MCP server discovery and subprocess spawning")
+        else:
+            cfg_path = Path(mcp_config) if mcp_config else (cwd / ".mcp.json")
+            if not cfg_path.is_file() and not mcp_config:
+                cfg_path = Path.home() / ".claude" / "mcp.json"
+            if cfg_path.is_file():
+                servers = MCPConfigLoader.load(cfg_path)
+                pool = get_mcp_pool()
+                for s_name, s_cfg in servers.items():
+                    cmd = s_cfg.get("command")
+                    if cmd:
+                        args = s_cfg.get("args", [])
+                        env = s_cfg.get("env")
+                        try:
+                            client = pool.get_or_create(s_name, cmd, args, env, cwd=cwd)
+                            for t_def in client.list_tools(timeout=10.0):
+                                registry.register(MCPToolAdapter(s_name, t_def, client))
+                        except Exception as exc:
+                            logger.warning("Failed to initialize MCP server '%s': %s", s_name, exc)
     return registry, ctx
 
 
@@ -281,10 +284,10 @@ def main(argv: Sequence[str] | None = None, env_file: str | Path | None = None) 
         parser.error(f"bad swarm spec: {exc}")
 
     cwd = Path(args.cwd).resolve() if args.cwd else Path.cwd()
-    tools_arg = args.tools
-    if tools_arg == "none" and genome.tools is not None and any(genome.tools):
-        # Auto-enable tools if the spec explicitly defines node tools
-        tools_arg = "all"
+    if args.tools is None:
+        tools_arg = "all" if (genome.tools is not None and any(genome.tools)) else "none"
+    else:
+        tools_arg = args.tools
 
     tool_registry, ctx = _setup_tools(tools_arg, args.mcp, cwd, args.dry_run)
     default_audit = cwd / ".evoharness" / "audit.jsonl" if tool_registry else None

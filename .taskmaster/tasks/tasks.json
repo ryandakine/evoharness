@@ -12,13 +12,85 @@
         "testStrategy": "bin/swarm --help; wrappers resolve evoharness; skill files exist in both IDE paths with matching triggers; README section present.",
         "subtasks": [],
         "updatedAt": "2026-10-29T02:30:30.859Z"
+      },
+      {
+        "id": "2",
+        "title": "Harden tool dispatch authorization and dry-run execution",
+        "description": "Enforce allowlist check immediately before tool execution in executor.py; preserve explicit --tools none even if spec defines tools; prevent MCP subprocess spawning in dry-run mode",
+        "details": "Addresses Codex High-1 and High-2",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-11-22T05:31:26.476Z"
+      },
+      {
+        "id": "3",
+        "title": "Enforce budget and spend limits in CachedBackend for ReAct completions",
+        "description": "Wrap complete_messages() in CachedBackend with budget_usd verification and spent tracking; raise BudgetExceeded on cap hit",
+        "details": "Addresses Codex High-3",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-11-22T05:31:58.270Z"
+      },
+      {
+        "id": "4",
+        "title": "Remediate structured key secret leaks and expand JSON redaction",
+        "description": "Redact dict values when key matches SENSITIVE_ENV_PATTERN in _sanitize_audit_args; update inline regexes to scrub quoted JSON key-value pairs; pass context.env to all audit log scrubbers",
+        "details": "Addresses Codex High-4",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-11-22T05:32:50.009Z"
+      },
+      {
+        "id": "5",
+        "title": "Implement bounded timeouts, pipe cleanup, and hard byte truncation limits",
+        "description": "Add timeout to communicate() after killpg in BashTool; enforce hard byte-level truncation in truncate_output; bound MCP pipe writes and close all 3 pipes on exit",
+        "details": "Addresses Codex High-6",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-11-22T05:34:20.633Z"
+      },
+      {
+        "id": "6",
+        "title": "Fix node cache invalidation for mutating tools and scope MCP pool keys",
+        "description": "Bypass node_cache when mutating tools are enabled; key MCPProcessPool clients by (server_name, command, args, cwd); preserve file permissions on atomic replace",
+        "details": "Addresses Codex High-7, Medium-8, Medium-9",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-11-22T05:35:16.062Z"
+      },
+      {
+        "id": "7",
+        "title": "Fix installed wrapper alias routing and unify release version metadata",
+        "description": "Strip eh- prefix in bin/swarm alias mapping for eh-swarm-debate and eh-swarm-audit; unify package version to 0.3.4 across pyproject.toml, __version__, CLI --version, and MCP info",
+        "details": "Addresses Codex Medium-11, Medium-12, and release identity recommendations",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-11-22T05:35:53.028Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-10-29T02:30:30.859Z",
-      "taskCount": 1,
-      "completedCount": 1,
+      "lastModified": "2026-11-22T05:35:53.028Z",
+      "taskCount": 7,
+      "completedCount": 7,
       "tags": [
         "master"
       ]

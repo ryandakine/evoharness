@@ -140,12 +140,22 @@ class CachedBackend:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
     ) -> Response:
+        with self._lock:
+            if self.budget is not None and self.spent >= self.budget:
+                raise BudgetExceeded(f"spent ${self.spent:.4f} >= cap ${self.budget:.4f}")
         if hasattr(self.inner, "complete_messages"):
-            return self.inner.complete_messages(
+            resp = self.inner.complete_messages(
                 messages, model, sample, tools=tools, tool_choice=tool_choice
             )
-        prompt = "\n".join(m.get("content", "") for m in messages if m.get("content"))
-        return self.complete(prompt, model, sample)
+        else:
+            prompt = "\n".join(m.get("content", "") for m in messages if m.get("content"))
+            resp = self.inner.complete(prompt, model, sample)
+        with self._lock:
+            self.spent += resp.cost
+            self.misses += 1
+            if self.budget is not None and self.spent > self.budget:
+                raise BudgetExceeded(f"spent ${self.spent:.4f} >= cap ${self.budget:.4f}")
+        return resp
 
 
 _TRANSIENT = {"RateLimitError", "RouterRateLimitError", "Timeout", "APITimeoutError", "APIConnectionError",

@@ -20,7 +20,7 @@ from .llm import (
 from .online import Experience, PromptUpdate, optimize_prompts
 from .swarm import ParticleSwarm, PSOConfig, RoleSearchResult, g_decode, jfk_scores, search_roles
 
-__version__ = "0.2.0"
+__version__ = "0.3.4"
 
 __all__ = [
     "APIBackend", "AgentError", "Attribution", "Backend", "BudgetExceeded", "CachedBackend",

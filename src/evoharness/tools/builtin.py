@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -76,7 +77,21 @@ class BashTool(Tool):
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 except OSError:
                     pass
-                proc.communicate()
+                try:
+                    proc.communicate(timeout=2.0)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+                finally:
+                    if proc.stdout:
+                        try:
+                            proc.stdout.close()
+                        except OSError:
+                            pass
+                    if proc.stderr:
+                        try:
+                            proc.stderr.close()
+                        except OSError:
+                            pass
                 return ToolResult(
                     output=f"Command timed out after {self.timeout}s: {command}",
                     error=True,
@@ -191,16 +206,26 @@ class WriteFileTool(Tool):
                 is_dry_run=True,
             )
 
+        temp_path: Path | None = None
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             # Atomic write via temporary file in the same directory
             with tempfile.NamedTemporaryFile("w", dir=str(target.parent), delete=False, encoding="utf-8") as tf:
                 tf.write(content)
                 temp_path = Path(tf.name)
+            if target.exists():
+                shutil.copymode(str(target), str(temp_path))
             os.replace(temp_path, target)
+            temp_path = None
             return ToolResult(output=f"Successfully wrote {len(content)} characters to '{path_str}'")
         except Exception as exc:
             return ToolResult(output=f"Failed to write '{path_str}': {exc}", error=True)
+        finally:
+            if temp_path and temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
 
 class EditFileTool(Tool):
@@ -273,10 +298,21 @@ class EditFileTool(Tool):
                 )
 
             # Atomic replace
-            with tempfile.NamedTemporaryFile("w", dir=str(target.parent), delete=False, encoding="utf-8") as tf:
-                tf.write(new_full_content)
-                temp_path = Path(tf.name)
-            os.replace(temp_path, target)
-            return ToolResult(output=f"Successfully replaced content in '{path_str}'")
+            temp_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile("w", dir=str(target.parent), delete=False, encoding="utf-8") as tf:
+                    tf.write(new_full_content)
+                    temp_path = Path(tf.name)
+                if target.exists():
+                    shutil.copymode(str(target), str(temp_path))
+                os.replace(temp_path, target)
+                temp_path = None
+                return ToolResult(output=f"Successfully replaced content in '{path_str}'")
+            finally:
+                if temp_path and temp_path.exists():
+                    try:
+                        temp_path.unlink()
+                    except OSError:
+                        pass
         except Exception as exc:
             return ToolResult(output=f"Failed to edit '{path_str}': {exc}", error=True)

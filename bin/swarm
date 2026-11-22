@@ -71,7 +71,7 @@ def build_context(files: list[str]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    self_name = Path(sys.argv[0]).name
+    self_name = Path(sys.argv[0]).name.removeprefix("eh-")
 
     if argv and argv[0] in {"-h", "--help"}:
         # Fall through to argparse help after mild rewrite.

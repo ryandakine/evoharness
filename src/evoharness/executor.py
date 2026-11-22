@@ -16,7 +16,7 @@ from typing import Any
 
 from .genome import Genome
 from .llm import Backend, BudgetExceeded, ModelSpec, Response
-from .tools.base import ExecutionContext, ToolRegistry, ToolResult, redact_sensitive_text
+from .tools.base import SENSITIVE_ENV_PATTERN, ExecutionContext, ToolRegistry, ToolResult, redact_sensitive_text
 
 logger = logging.getLogger("evoharness.executor")
 _AUDIT_LOCK = threading.Lock()
@@ -80,13 +80,19 @@ def _layers(g: Genome, need: set[int]) -> list[list[int]]:
     return [sorted(layers[lv]) for lv in sorted(layers)]
 
 
-def _sanitize_audit_args(obj: Any) -> Any:
+def _sanitize_audit_args(obj: Any, env: dict[str, str] | None = None) -> Any:
     if isinstance(obj, dict):
-        return {k: _sanitize_audit_args(v) for k, v in obj.items()}
+        out = {}
+        for k, v in obj.items():
+            if SENSITIVE_ENV_PATTERN.search(str(k)):
+                out[k] = "[REDACTED]"
+            else:
+                out[k] = _sanitize_audit_args(v, env)
+        return out
     if isinstance(obj, (list, tuple)):
-        return [_sanitize_audit_args(v) for v in obj]
+        return [_sanitize_audit_args(v, env) for v in obj]
     if isinstance(obj, str):
-        return redact_sensitive_text(obj)
+        return redact_sensitive_text(obj, env)
     return obj
 
 def _log_audit(
@@ -97,6 +103,7 @@ def _log_audit(
     args: dict[str, Any],
     res: ToolResult,
     duration: float,
+    env: dict[str, str] | None = None,
 ) -> None:
     if not audit_file:
         return
@@ -108,7 +115,7 @@ def _log_audit(
             "node": node,
             "model": model,
             "tool": tool_name,
-            "args": _sanitize_audit_args(args),
+            "args": _sanitize_audit_args(args, env),
             "error": res.error,
             "is_dry_run": res.is_dry_run,
             "duration_s": round(duration, 4),
@@ -165,7 +172,7 @@ def run_react_node(
         last_resp = resp
 
         if not resp.tool_calls:
-            return Response(resp.text, total_tin, total_tout, total_cost)
+            return Response(resp.text, total_tin, total_tout, total_cost, tool_calls=all_tool_calls)
 
         # Handle parallel tool calls
         if turn == max_tool_turns - 1:
@@ -181,7 +188,7 @@ def run_react_node(
             total_cost += synth_resp.cost
             total_tin += synth_resp.input_tokens
             total_tout += synth_resp.output_tokens
-            return Response(synth_resp.text, total_tin, total_tout, total_cost)
+            return Response(synth_resp.text, total_tin, total_tout, total_cost, tool_calls=all_tool_calls)
 
         messages.append({"role": "assistant", "content": resp.text, "tool_calls": resp.tool_calls})
 
@@ -206,6 +213,14 @@ def run_react_node(
                     ),
                     error=True,
                 )
+            elif allowed_tools is not None and tool_name not in allowed_tools:
+                res = ToolResult(
+                    output=(
+                        f"Error: tool '{tool_name}' is not permitted for this agent node. "
+                        f"Allowed tools: {sorted(allowed_tools)}"
+                    ),
+                    error=True,
+                )
             else:
                 res = tool_registry.execute(tool_name, args, context)
             duration = time.time() - t0
@@ -216,7 +231,7 @@ def run_react_node(
                 except Exception:
                     pass
 
-            _log_audit(audit_file, node, model.name, tool_name, args, res, duration)
+            _log_audit(audit_file, node, model.name, tool_name, args, res, duration, env=context.env)
             all_tool_calls.append(tc)
 
             messages.append({
@@ -302,14 +317,26 @@ def run_genome(
             raise AgentError(i, model.name, exc) from exc
 
     for layer in _layers(g, need):
+        mutating_nodes: set[int] = set()
+        if tool_registry is not None:
+            for i in layer:
+                allowed_names = node_tools.get(i) if node_tools is not None else None
+                if allowed_names is not None:
+                    tools_to_check = [tool_registry.get(t) for t in allowed_names if tool_registry.get(t) is not None]
+                else:
+                    tools_to_check = tool_registry.list_tools()
+                if any(t.is_mutating for t in tools_to_check):
+                    mutating_nodes.add(i)
+
         jobs: list[tuple[int, str, ModelSpec]] = []
         for i in layer:
             ctx = "".join(f"\n[input from agent {p}]: {outputs[p]}" for p in g.parents(i) if p in outputs)
             raw = task.prompt if external_inputs is None else external_inputs.get(i, "")
             prompt = f"{roles[g.roles[i]]}\n\nTask: {raw}\n{ctx}"
             model = models[g.models[i]]
+
             key = (i, model, sample, prompt)
-            if node_cache is not None and key in node_cache:
+            if node_cache is not None and i not in mutating_nodes and key in node_cache:
                 r = node_cache[key]
                 outputs[i], cost = r.text, cost + r.cost
                 total_tool_calls += len(r.tool_calls)
@@ -323,7 +350,7 @@ def run_genome(
         for (i, prompt, model), r in zip(jobs, results):
             calls += 1
             total_tool_calls += len(r.tool_calls)
-            if node_cache is not None:
+            if node_cache is not None and i not in mutating_nodes:
                 node_cache[(i, model, sample, prompt)] = r
             outputs[i], cost = r.text, cost + r.cost
     outputs = dict(sorted(outputs.items()))

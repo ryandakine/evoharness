@@ -86,7 +86,7 @@ class MCPStdioClient:
                 {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
-                    "clientInfo": {"name": "evoharness", "version": "0.3.0"},
+                    "clientInfo": {"name": "evoharness", "version": "0.3.4"},
                 },
                 timeout=timeout,
             )
@@ -187,26 +187,56 @@ class MCPStdioClient:
 
     def close(self) -> None:
         self._closing = True
-        if self.proc and self.proc.poll() is None:
+        if self.proc:
+            if self.proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                except OSError:
+                    pass
+                try:
+                    self.proc.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                    except OSError:
+                        pass
+                    try:
+                        self.proc.wait(timeout=2.0)
+                    except subprocess.TimeoutExpired:
+                        pass
             try:
-                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                if self.proc.stdin:
+                    self.proc.stdin.close()
             except OSError:
                 pass
             try:
-                self.proc.wait(timeout=1.5)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
-                except OSError:
-                    pass
-                self.proc.wait()
+                if self.proc.stdout:
+                    self.proc.stdout.close()
+            except OSError:
+                pass
+            try:
+                if self.proc.stderr:
+                    self.proc.stderr.close()
+            except OSError:
+                pass
+
+        if self._stdout_thread and self._stdout_thread.is_alive():
+            self._stdout_thread.join(timeout=2.0)
+        if self._stderr_thread and self._stderr_thread.is_alive():
+            self._stderr_thread.join(timeout=2.0)
+
+        with self._pending_lock:
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(RuntimeError("MCP client closed"))
+            self._pending.clear()
 
 
 class MCPProcessPool:
     """Reuses active MCPStdioClient instances across DAG nodes and cleans them up on shutdown."""
 
     def __init__(self) -> None:
-        self._clients: dict[str, MCPStdioClient] = {}
+        self._clients: dict[tuple[str, str, tuple[str, ...], str | None], MCPStdioClient] = {}
         self._lock = threading.Lock()
 
     def get_or_create(
@@ -217,12 +247,13 @@ class MCPProcessPool:
         env: dict[str, str] | None = None,
         cwd: Path | None = None,
     ) -> MCPStdioClient:
+        key = (name, command, tuple(args or ()), str(Path(cwd).resolve()) if cwd else None)
         with self._lock:
-            client = self._clients.get(name)
+            client = self._clients.get(key)
             if client is None or (client.proc and client.proc.poll() is not None):
                 client = MCPStdioClient(command, args, env, cwd)
                 client.start()
-                self._clients[name] = client
+                self._clients[key] = client
             return client
 
     def close_all(self) -> None:
