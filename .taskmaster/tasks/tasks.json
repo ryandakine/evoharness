@@ -176,13 +176,36 @@
         "priority": "high",
         "subtasks": [],
         "updatedAt": "2026-11-28T02:31:11.486Z"
+      },
+      {
+        "id": "16",
+        "title": "WP4 v4: canonical_number for numeric_match and numeric_key",
+        "description": "Replace tolerance compare with one canonical exact value (D=6 half-even) so scorer and vote key agree; size policy 309 digits / magnitude 10**309.",
+        "details": "Plan docs/plans/2026-11-27-wp4-fix-plan-v4.md, Codex r8 GO WITH CHANGES. TDD in tests/test_scoring.py, impl in src/evoharness/executor.py, export in __init__.",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-11-28T04:10:54.018Z"
+      },
+      {
+        "id": "17",
+        "title": "Fix inherited numeric parse defects",
+        "description": "Pinned, unfixed in WP4 v4: .5e-3 reads 3, .5e3 reads 0.5, 1/-2 reads -2, 1,234 1/2 reads 0.5, 1,2 reads 2.",
+        "details": "Rework _NUMBER regex grammar in executor.py (leading-dot decimals with exponent, signed denominators, comma + mixed fraction). Update the pin tests (test_supported_grammar_pins_known_defects) when fixed. Source: Codex r8 P2.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-11-28T02:31:11.486Z",
-      "taskCount": 15,
-      "completedCount": 11,
+      "lastModified": "2026-11-28T04:10:54.018Z",
+      "taskCount": 17,
+      "completedCount": 12,
       "tags": [
         "master"
       ]

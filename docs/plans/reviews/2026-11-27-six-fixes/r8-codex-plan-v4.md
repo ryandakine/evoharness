@@ -1,0 +1,17 @@
+Canonical equality fixes v3’s symmetry/transitivity problem. The remaining gaps are parsing, range policy, and weak test evidence.
+
+- **P1 — The prototype does not implement the promised resource guard.** Its decimal/scientific branch never checks digit-run length. `"1." + "2"*100000` builds a huge `Fraction` and returns a number instead of `None`. Check normalized coefficient length before conversion, including comma-separated coefficients. Also, `1e-99999999999999999999` returns `None`: `Decimal` rejects the exponent before the underflow shortcut. Specify and test exponent handling before conversion.
+
+- **P2 — The range rule is neither the old float boundary nor representation-independent.** `1e308` is accepted; its equivalent 309-digit integer spelling is rejected. `9e308` is accepted despite overflowing float. Define separate input-size and numeric-magnitude limits, then test their boundaries across integer, decimal, scientific, and fraction forms. Also, old `numeric_match("1e999","1e999")` already returns `0.0`; that claimed behavior change is false.
+
+- **P2 — “Regex unchanged” preserves serious parsing errors.** Confirmed: `.5e-3 → 3`, `.5e3 → 0.5`, `1/-2 → -2`, and `1,234 1/2 → 0.5`. These are inherited defects, not v4 regressions, but broad claims of scientific/mixed-fraction support conceal them. Fix separately or explicitly document and pin the supported grammar. `1,2 != 12` proves little: the parser accepts it as `2`. Add direct negative mixed-fraction expectations, including `-2 1/2 → -2.5` and `-0 1/2 → -0.5`.
+
+- **P2 — The guarantee’s “Consequence” exceeds its stated scope.** Identical blank or invalid answers share the reference’s key while scoring zero. Thus “correct iff the winning group is the reference’s group” requires a numeric reference. The useful universal guarantee is: **for any fixed reference, all answers sharing a key receive the same score**. Test blank-majority and invalid-reference cases explicitly.
+
+- **P2 — D=6 is a larger policy change than boundary splitting.** Old decimal tolerance was magnitude-dependent, with a `1e-9` floor. Now `0.1` matches `0.1000004`, and `0.0000004` matches `-0.0000004`; both previously failed. The latter follows the explicitly chosen zero bucket, but “same resolution” is misleading. Boundary splits also affect fractions such as `1/3`, regardless of how many decimal places the reference contains.
+
+- **P2 — Several proposed tests pass for the wrong reason.** `[993,992,993]` using the full huge integers still passes the old float implementation: the first answer wins the incorrectly merged group and scores one. Put `…992` first and assert both winner and score. `[1.0000009,1,1,1,7]` also passes unchanged code. Pair/triple consistency cannot detect a consistently wrong parser; prioritize independent expected canonical values, signed half-even ties, and range boundaries over exhaustive cubic checks.
+
+- **P3 — Tighten test mechanics.** Repeating `[0.1,0.2,0.7]` across three tasks gives exactly `3.0` under both accumulation orders. Assert your chosen fixture distinguishes those orders. Membership in `(0.0,1.0)` accepts booleans and integers; add `type(result) is float` if that contract matters.
+
+VERDICT: GO WITH CHANGES
