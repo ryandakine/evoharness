@@ -540,8 +540,6 @@ class Judge(unittest.TestCase):
         self.assertEqual(judge.calls, 2)
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 D6 = 10 ** 6
@@ -775,3 +773,23 @@ class VoteCostOrder(unittest.TestCase):
         mean_cost = majority_vote(ev, 0, 3, vote_key=numeric_key)[1]
         self.assertEqual(mean_cost, call_by_call / 2)
         self.assertNotEqual(mean_cost, per_task / 2)
+
+
+class CanonicalNumberMemoryTest(unittest.TestCase):
+    def test_many_tokens_bounded_memory(self):
+        import tracemalloc
+
+        text = "1 " * 200_000 + "42"
+        tracemalloc.start()
+        try:
+            result = canonical_number(text)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(result, 42)
+        self.assertLess(peak, 4 * 1024 * 1024)
+        self.assertEqual(numeric_match(text, "42"), 1.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

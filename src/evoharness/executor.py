@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Hashable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -114,10 +115,10 @@ def canonical_number(text: str) -> Hashable | None:
     and the rounded value must satisfy |value| < 10**309. Otherwise None. A nonzero value
     below 1e-7 is 0, reached without building the huge Fraction.
     """
-    found = list(_NUMBER.finditer(text.replace("\u2212", "-")))
-    if not found:
+    last = deque(_NUMBER.finditer(text.replace("\u2212", "-")), maxlen=1)
+    if not last:
         return None
-    m = found[-1]
+    m = last[0]
     neg = m["sign"] == "-"
     try:
         if m["whole"] is not None:
