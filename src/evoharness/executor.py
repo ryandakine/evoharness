@@ -5,13 +5,14 @@ import datetime as dt
 import hashlib
 import json
 import logging
-import math
 import re
 import threading
 import time
 from collections.abc import Callable, Hashable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -86,57 +87,95 @@ _NUMBER = re.compile(
 )
 
 
-def _last_number(text: str) -> float | None:
-    """Value of the last number in the text; fractions and mixed fractions count as one number."""
-    value = None
-    for m in _NUMBER.finditer(text.replace("−", "-")):
-        try:
-            if m["whole"] is not None:
-                v = int(m["whole"]) + int(m["mnum"]) / int(m["mden"])
-            elif m["num"] is not None:
-                v = int(m["num"]) / int(m["den"])
+_PLACES = 6                    # answers are compared at 6 decimal places
+_SCALE = 10 ** _PLACES
+_MAX_DIGITS = 309              # input limit: longest digit run accepted, for every spelling
+_MAX_ADJUSTED = _MAX_DIGITS - 1  # magnitude limit: |value| < 10**309
+
+
+def canonical_number(text: str) -> Hashable | None:
+    """One exact value for the last number in the text, or None. Equal answers compare with ==.
+
+    Supported grammar (the _NUMBER regex, unchanged): optional sign (ASCII or U+2212) at the
+    start of a number, optional '$', then a mixed fraction '2 1/2', a fraction '1/2', or a
+    decimal with thousands commas ('1,234.5') and an optional exponent ('1e-3'). The LAST
+    token wins, and if it is invalid the result is None; there is no fallback to an earlier
+    number. Known parser defects, pinned in tests and tracked in Taskmaster: '.5e-3' reads 3,
+    '.5e3' reads 0.5, '1/-2' reads -2, '1,234 1/2' reads 0.5, '1,2' reads 2.
+
+    Value: integer text becomes an exact int. Anything else is an exact Fraction rounded
+    half-even to 6 places (no float involved); a whole result is returned as int, so
+    '18.000000' is 18 and '-0.0000004' is 0. Policy: 0.1 matches 0.1000004, +/-0.0000004
+    share the zero bucket, and values within 1e-6 can still land in different buckets
+    (0.3333334 vs 0.3333335 differ). Integers are never rounded.
+
+    Size policy, the same for integer, decimal, scientific and fraction spellings: every
+    digit run (commas removed) may have at most 309 digits, checked before any conversion,
+    and the rounded value must satisfy |value| < 10**309. Otherwise None. A nonzero value
+    below 1e-7 is 0, reached without building the huge Fraction.
+    """
+    found = list(_NUMBER.finditer(text.replace("\u2212", "-")))
+    if not found:
+        return None
+    m = found[-1]
+    neg = m["sign"] == "-"
+    try:
+        if m["whole"] is not None:
+            if max(len(m["whole"]), len(m["mnum"]), len(m["mden"])) > _MAX_DIGITS:
+                return None
+            q = Fraction(int(m["whole"])) + Fraction(int(m["mnum"]), int(m["mden"]))
+        elif m["num"] is not None:
+            if max(len(m["num"]), len(m["den"])) > _MAX_DIGITS:
+                return None
+            q = Fraction(int(m["num"]), int(m["den"]))
+        else:
+            coef, _, exp = m["plain"].replace(",", "").lower().partition("e")
+            whole, _, frac = coef.partition(".")
+            if max(len(whole), len(frac), len(exp.lstrip("+-"))) > _MAX_DIGITS:
+                return None
+            if not frac and "." not in coef and not exp:
+                v = int(whole)
+                return -v if neg else v
+            d = Decimal(coef)
+            e = int(exp) if exp else 0
+            if d == 0:
+                q = Fraction(0)
+            elif d.adjusted() + e > _MAX_ADJUSTED:
+                return None
+            elif d.adjusted() + e < -(_PLACES + 1):
+                q = Fraction(0)
             else:
-                v = float(m["plain"].replace(",", ""))
-        except (ValueError, ZeroDivisionError, OverflowError):
-            continue
-        value = -v if m["sign"] == "-" else v
-    return value
+                q = Fraction(d) * Fraction(10) ** e
+    except (ValueError, ZeroDivisionError, InvalidOperation):
+        return None
+    n = round((-q if neg else q) * _SCALE)
+    if abs(n) >= 10 ** _MAX_DIGITS * _SCALE:
+        return None
+    return n // _SCALE if n % _SCALE == 0 else Fraction(n, _SCALE)
 
 
-def numeric_match(answer: str, reference: str, rel_tol: float = 1e-6) -> float:
-    """Compare the last number in each string, so '$18.00' matches '18' and '1/2' matches '0.5'.
+def numeric_match(answer: str, reference: str) -> float:
+    """1.0 when the last number in each string has the same canonical_number, else 0.0.
 
-    An integer reference needs an integer match (absolute 1e-9); rel_tol applies only
-    to non-integer references and is capped at 1e-6 absolute. A reference with no
-    number falls back to exact_match. Known limits: the LAST number wins ('$18 for 3
-    days' reads as 3), a time like '3:30' reads as 30, '50%' is 50, not 0.5, and
-    integers beyond 2**53 lose float precision (they get the capped tolerance).
+    '$18.00' matches '18', '1/2' matches '0.5'. A string with no valid number never matches,
+    not even itself, so text benchmarks need exact_match as the scorer. The relation is an
+    equivalence on numeric answers and agrees with numeric_key. Known limits: the LAST
+    number wins ('$18 for 3 days' reads as 3), '3:30' reads as 30, '50%' is 50, not 0.5.
     Pass the extracted answer, not a whole reply.
     """
-    ref = _last_number(reference)
-    if ref is None:
-        return exact_match(answer, reference)
-    got = _last_number(answer)
-    if got is None:
-        return 0.0
-    if math.isfinite(ref) and abs(ref) < 2**53 and ref.is_integer():
-        return float(abs(got - ref) <= 1e-9)
-    return float(abs(got - ref) <= max(min(rel_tol * max(abs(got), abs(ref)), 1e-6), 1e-9))
+    a, r = canonical_number(answer), canonical_number(reference)
+    return float(a is not None and r is not None and a == r)
 
 
 def numeric_key(s: str) -> Hashable:
-    """Vote-grouping key agreeing with numeric_match: '$18.00', '18.0' and 'Answer 18' share one.
+    """Vote-grouping key: canonical_number(s), or the stripped raw text when there is none.
 
-    Integral values key as int (so 18 == 18.0 across types, on purpose); other numbers as
-    round(v, 9). Text with no number keys as its normalised words. Integers beyond 2**53
-    are not distinguished from nearby floats.
+    For any fixed reference, answers sharing a key get the same numeric_match score. That does
+    not make the winner right: blank or invalid answers share a key with each other and score
+    0 against every reference. A numeric and a raw-text key never collide (number vs str).
     """
-    v = _last_number(s)
-    if v is None:
-        return re.sub(r"\W+", " ", s.lower()).strip()
-    if math.isfinite(v) and abs(v) < 2**53 and v.is_integer():
-        return int(v)
-    return round(v, 9)
+    c = canonical_number(s)
+    return c if c is not None else s.strip()
 
 
 def _layers(g: Genome, need: set[int]) -> list[list[int]]:

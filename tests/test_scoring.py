@@ -1,5 +1,7 @@
 """WP4: numeric scoring, token accounting, per-task detail, bootstrap intervals, judge scorer."""
+import itertools
 import unittest
+from fractions import Fraction
 
 from evoharness import (
     CachedBackend,
@@ -11,6 +13,8 @@ from evoharness import (
     Response,
     Task,
     bootstrap_ci,
+    canonical_number,
+    exact_match,
     majority_vote,
     majority_vote_detail,
     numeric_key,
@@ -64,7 +68,9 @@ class NumericMatch(unittest.TestCase):
     def test_integer_reference_needs_exact_integer(self):
         for answer, reference, expected in [
             ("1000001", "1000000", 0.0), ("5000004", "5000000", 0.0), ("999999", "1000000", 0.0),
-            ("123456789", "123456788", 0.0), ("1000000.5", "1000000", 0.0), ("18.0000001", "18", 0.0),
+            ("123456789", "123456788", 0.0), ("1000000.5", "1000000", 0.0),
+            # D=6: anything that rounds to the same 6 places is one answer (was: abs 1e-9 for integers).
+            ("18.0000001", "18", 1.0), ("18.0000004", "18", 1.0), ("18.000001", "18", 0.0),
             ("-1000001", "-1000000", 0.0), ("1,000,001", "1,000,000", 0.0),
             ("1000000", "1,000,000", 1.0), ("1e6", "1000000", 1.0), ("0.333333", "1/3", 1.0), ("18.0", "18", 1.0),
         ]:
@@ -89,9 +95,54 @@ class NumericMatch(unittest.TestCase):
         self.assertEqual(numeric_match("between 3-5", "5"), 1.0)
         self.assertEqual(numeric_match("between 3-5", "-5"), 0.0)
 
-    def test_falls_back_to_exact_match_when_the_reference_has_no_number(self):
-        self.assertEqual(numeric_match("Paris", "paris"), 1.0)
-        self.assertEqual(numeric_match("Lyon", "Paris"), 0.0)
+    def test_no_number_never_matches_so_text_benchmarks_use_exact_match(self):
+        # Was: a reference without a number fell back to exact_match. Now a non-number is None
+        # and None never matches, which also stops "" matching "$".
+        for answer, reference in [("Paris", "paris"), ("Paris", "Paris"), ("Lyon", "Paris"), ("", "$"), ("", "")]:
+            with self.subTest(answer=answer, reference=reference):
+                self.assertEqual(numeric_match(answer, reference), 0.0)
+        self.assertEqual(exact_match("Paris", "paris"), 1.0)
+
+    def test_decimal_policy_is_a_six_place_bucket_not_a_relative_tolerance(self):
+        # Honest D=6 policy: 0.1 now matches 0.1000004 (old tolerance there was 1e-7), and
+        # +/-0.0000004 share the zero bucket (old: 0.0). Buckets split at half-units.
+        for answer, reference, expected in [
+            ("0.1", "0.1000004", 1.0), ("0.1", "0.1000006", 0.0), ("0.0000004", "-0.0000004", 1.0),
+            ("0.0000004", "0", 1.0), ("-0.0000004", "0", 1.0), ("0.0000006", "0", 0.0),
+            ("0.3333334", "0.3333335", 0.0), ("0.3333335", "0.3333336", 1.0), ("1/3", "0.3333335", 0.0),
+            ("1/3", "0.333333", 1.0),
+        ]:
+            with self.subTest(answer=answer, reference=reference):
+                self.assertEqual(numeric_match(answer, reference), expected)
+                self.assertIs(type(numeric_match(answer, reference)), float)
+
+    def test_integers_beyond_2_pow_53_are_exact(self):
+        self.assertEqual(numeric_match("9007199254740993", "9007199254740992"), 0.0)  # old: 1.0
+        self.assertEqual(numeric_match("9007199254740993", "9007199254740993"), 1.0)
+        self.assertEqual(numeric_match("9007199254740993.0", "9007199254740993"), 1.0)
+
+    def test_supported_grammar_pins_known_defects(self):
+        """Pins what the unchanged _NUMBER regex does today. The first four are parser defects
+        (Taskmaster task 17), pinned so a fix is a deliberate edit of this test, not a surprise."""
+        for text, expected in [
+            (".5e-3", 3),                  # defect: should be 0.0005
+            (".5e3", Fraction(1, 2)),      # defect: should be 500
+            ("1/-2", -2),                  # defect: not a fraction, last token is -2
+            ("1,234 1/2", Fraction(1, 2)), # defect: should be 1234.5; the fraction wins
+            ("1,2", 2), ("12,34", 34),     # a bad comma group splits into two numbers; the last wins
+            ("50%", 50), ("3:30", 30), ("$18 for 3 days", 3), ("between 3-5", 5), ("18 m^2", 18),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(canonical_number(text), expected)
+
+    def test_signed_mixed_fractions(self):
+        for text, expected in [("2 1/2", Fraction(5, 2)), ("-2 1/2", Fraction(-5, 2)),
+                               ("-0 1/2", Fraction(-1, 2)), ("0 1/2", Fraction(1, 2)),
+                               ("\u22122 1/2", Fraction(-5, 2))]:
+            with self.subTest(text=text):
+                self.assertEqual(canonical_number(text), expected)
+        self.assertEqual(numeric_match("-2 1/2", "-2.5"), 1.0)
+        self.assertEqual(numeric_match("-2 1/2", "2.5"), 0.0)
 
 
 class TokenAccounting(unittest.TestCase):
@@ -344,10 +395,12 @@ class NumericVote(unittest.TestCase):
         self.assertEqual((row.answer, row.score), ("7", 0.0))
 
     def test_numeric_key_rows(self):
-        for a, b in [("18", "$18.00"), ("18", "18.0"), ("18", "Answer 18"), ("Paris", "paris"), ("1/3", "0.333333333")]:
+        for a, b in [("18", "$18.00"), ("18", "18.0"), ("18", "Answer 18"), ("Paris", "Paris "),
+                     ("1/3", "0.333333333")]:
             with self.subTest(a=a, b=b):
                 self.assertEqual(numeric_key(a), numeric_key(b))
-        for a, b in [("7", "18"), ("1000001", "1000000"), ("123456789.5", "123456790"), ("18.5", "18")]:
+        for a, b in [("7", "18"), ("1000001", "1000000"), ("123456789.5", "123456790"), ("18.5", "18"),
+                     ("Paris", "paris")]:  # no number: keyed by stripped raw text, case kept
             with self.subTest(a=a, b=b):
                 self.assertNotEqual(numeric_key(a), numeric_key(b))
 
@@ -489,3 +542,236 @@ class Judge(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+D6 = 10 ** 6
+LIMIT = 10 ** 309  # |value| must be below this; inputs are limited to 309 digits per digit run
+
+
+class CanonicalNumber(unittest.TestCase):
+    """Expected values are written out by hand (half-even at 6 places), not derived from the code."""
+
+    def test_values_and_types(self):
+        for text, expected in [
+            ("18", 18), ("18.000000", 18), ("$1,234", 1234), ("-42", -42), ("\u221242", -42), ("1e5", 100000),
+            ("1,234.5e1", 12345), ("0", 0), ("-0", 0), ("-0.0000004", 0), ("0.0000004", 0),
+            ("1/3", Fraction(333333, D6)), ("2/3", Fraction(666667, D6)), ("1/2", Fraction(1, 2)),
+            (".5", Fraction(1, 2)), ("1e-3", Fraction(1, 1000)), ("$1,234.50", Fraction(2469, 2)),
+            ("9007199254740993", 9007199254740993), ("9007199254740993.0", 9007199254740993),
+        ]:
+            with self.subTest(text=text):
+                got = canonical_number(text)
+                self.assertEqual(got, expected)
+                self.assertIs(type(got), type(expected))
+
+    def test_signed_half_even_ties_at_six_places(self):
+        # n.5 units go to the even neighbour, for both signs.
+        for text, units in [
+            ("0.0000005", 0), ("0.0000015", 2), ("0.0000025", 2), ("0.0000035", 4),
+            ("-0.0000005", 0), ("-0.0000015", -2), ("-0.0000025", -2), ("-0.0000035", -4),
+            ("0.3333335", 333334), ("0.3333325", 333332), ("-0.3333335", -333334), ("5e-7", 0), ("15e-7", 2),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual(canonical_number(text), Fraction(units, D6))
+        self.assertEqual(canonical_number("0.0000015"), Fraction(2, D6))
+
+    def test_size_policy_is_the_same_for_every_spelling(self):
+        # One policy: each digit run <= 309 digits (input size) and |value| < 10**309 (magnitude).
+        nines = 10 ** 309 - 1
+        ok = [
+            ("9" * 309, nines), ("999" + ",999" * 102, nines), ("9" * 309 + "/1", nines),
+            ("0 " + "9" * 309 + "/1", nines), ("9" * 309 + ".0", nines), ("9.99e308", 999 * 10 ** 306),
+            ("1e308", 10 ** 308), ("1" + "0" * 308, 10 ** 308), ("10e307", 10 ** 308), ("0.1e309", 10 ** 308),
+            ("1000" + ".0e305", 10 ** 308), ("1" + "0" * 308 + "/1", 10 ** 308),
+        ]
+        for text, expected in ok:
+            with self.subTest(accepted=text[:30]):
+                self.assertEqual(canonical_number(text), expected)
+        too_big = [
+            "1" + "0" * 309, "9" * 310, "1" + ",000" * 103, "1" + "0" * 309 + "/1", "1" + "0" * 309 + ".0",
+            "1e309", "10e308", "1.5e309", "-1e309", "1e999", "1 " + "9" * 309 + "/1",   # sum reaches 10**309
+            "9" * 309 + ".9999999",                                                      # rounds up to 10**309
+            "1/" + "0" * 310,                                                            # denominator over limit
+            "1e" + "9" * 310, "1e-" + "9" * 310,                                         # exponent run over the limit
+            "1e99999999999999999999",
+        ]
+        for text in too_big:
+            with self.subTest(rejected=text[:30]):
+                self.assertIsNone(canonical_number(text))
+
+    def test_boundary_values_are_the_same_whatever_the_spelling(self):
+        self.assertEqual(canonical_number("1e308"), canonical_number("1" + "0" * 308))
+        self.assertEqual(canonical_number("1e308"), canonical_number("100000e303"))
+        self.assertEqual(canonical_number("1e308"), canonical_number("1" + "0" * 308 + "/1"))
+        self.assertIsNone(canonical_number("1e309"))
+        self.assertIsNone(canonical_number("1" + "0" * 309))
+        self.assertEqual(canonical_number("9" * 309 + ".4"), Fraction(10 ** 309 - 1) + Fraction(2, 5))
+
+    def test_digit_runs_are_checked_before_any_big_conversion(self):
+        import time
+        started = time.perf_counter()
+        for text in ["1." + "2" * 100000, "1," + "234," * 5000 + "567", "9" * 100000, "1/" + "9" * 100000,
+                     "1" * 100000 + "/3", "2 " + "1" * 100000 + "/3", "1." + "2" * 100000 + "e5", "1e" + "9" * 100000]:
+            with self.subTest(text=text[:12]):
+                self.assertIsNone(canonical_number(text))
+        self.assertLess(time.perf_counter() - started, 1.0)
+
+    def test_tiny_and_zero_exponents_collapse_to_zero_quickly(self):
+        import time
+        started = time.perf_counter()
+        for text in ["1e-7", "1e-400", "1e-99999999999999999999", "0e99999999999999999999", "0.000e5",
+                     "-1e-9999999999"]:
+            with self.subTest(text=text):
+                self.assertEqual(canonical_number(text), 0)
+        self.assertEqual(canonical_number("1e-6"), Fraction(1, D6))
+        self.assertEqual(canonical_number("0." + "0" * 308 + "1"), 0)       # 309 fraction digits: allowed
+        self.assertIsNone(canonical_number("0." + "0" * 309 + "1"))        # 310: over the run limit
+        self.assertLess(time.perf_counter() - started, 1.0)
+
+    def test_not_a_number_is_none(self):
+        for text in ["", "$", "Paris", "1/0", "1/" + "0", "no idea", "   "]:
+            with self.subTest(text=text):
+                self.assertIsNone(canonical_number(text))
+
+    def test_last_token_decides_and_an_invalid_last_token_does_not_fall_back(self):
+        self.assertEqual(canonical_number("it is 5 then 7"), 7)
+        self.assertIsNone(canonical_number("5 or 1/0"))      # old code read 5
+        self.assertIsNone(canonical_number("5 or 1e999"))
+
+    def test_one_digit_strings_over_the_cap_do_not_raise(self):
+        # int() refuses >4300 digits; the run limit must fire first.
+        self.assertIsNone(canonical_number("7" * 5000))
+        self.assertIsNone(canonical_number("7" * 5000 + ".5"))
+
+
+STRINGS = [
+    "18", "18.0", "$18.00", "1,234", "1234", "$1,234.50", "1234.5", "-5", "-$5", "5", "50%", "50", "0.5", ".5",
+    "1/2", "2 1/2", "-2 1/2", "2.5", "-2.5", "-0 1/2", "-0.5", "0 1/2", "3/4 cup", "0.75", "18 m^2", "1,2", "12", "1/3",
+    "0.333333",
+    "0.3333334", "0.3333335", "0.3333336", "1.0000009", "1.000001", "1", "1.1", "9007199254740993",
+    "9007199254740993.0", "9007199254740992", "1e-3", "0.001", "1e5", "100000", "\u22125", "-0", "0", "0.0000004",
+    "-0.0000004", "0.0000005", "0.0000015", "0.0000025", "1/0", "1e999", "-1e999", "1e-9999999999", "9" * 400,
+    "", "$", "Paris", "paris", "Paris ", "no idea", "between 3-5", "5 or 1/0",
+]
+
+
+class Equivalence(unittest.TestCase):
+    """match is 1.0 exactly when two canonicals are equal, so it is an equivalence on numbers."""
+
+    def test_match_and_key_agree_on_every_pair(self):
+        for a, b in itertools.product(STRINGS, repeat=2):
+            m = numeric_match(a, b)
+            self.assertIs(type(m), float)
+            self.assertIn(m, (0.0, 1.0))
+            self.assertEqual(m, numeric_match(b, a), (a, b))
+            if canonical_number(a) is not None and canonical_number(b) is not None:
+                self.assertEqual(m, float(numeric_key(a) == numeric_key(b)), (a, b))
+            if m == 1.0:
+                self.assertEqual(numeric_key(a), numeric_key(b), (a, b))
+
+    def test_match_is_transitive(self):
+        for a, b, c in itertools.product(STRINGS, repeat=3):
+            if numeric_match(a, b) == 1.0 and numeric_match(b, c) == 1.0:
+                self.assertEqual(numeric_match(a, c), 1.0, (a, b, c))
+
+    def test_for_a_fixed_reference_answers_sharing_a_key_score_alike(self):
+        # The universal guarantee. It does NOT say the winner is right: blank or invalid
+        # answers share a key with each other and score 0 against anything.
+        for ref in ["18", "-2.5", "1/3", "", "$", "1/0", "1e999", "Paris", "9007199254740993"]:
+            for a, b in itertools.product(STRINGS, repeat=2):
+                if numeric_key(a) == numeric_key(b):
+                    self.assertEqual(numeric_match(a, ref), numeric_match(b, ref), (a, b, ref))
+
+    def test_canonical_independent_cases_with_distinct_values_never_share_a_key(self):
+        values = {}
+        for t in STRINGS:
+            c = canonical_number(t)
+            if c is not None:
+                values.setdefault(c, []).append(t)
+        keys = {numeric_key(t) for t in STRINGS if canonical_number(t) is not None}
+        self.assertEqual(len(keys), len(values))
+
+
+def vote(replies, ref, key=numeric_key):
+    ev = scripted_eval(*[f"Answer: {r}" for r in replies], ref=ref)
+    row = majority_vote_detail(ev, 0, len(replies), vote_key=key)[0]
+    return row.answer, row.score
+
+
+HUGE_A, HUGE_B = "9007199254740992", "9007199254740993"  # distinct integers that collapse to one float
+
+
+class VoteRegressions(unittest.TestCase):
+    """Rows marked REGRESSION fail on the pre-v4 code (checked by running it); the rest pin the tie rule."""
+
+    def test_regression_huge_integers_stay_distinct_in_the_vote(self):
+        # Old: both spellings merge into one float group and the FIRST reply (..992) wins.
+        self.assertEqual(vote([HUGE_A, HUGE_B, HUGE_B], HUGE_B), (HUGE_B, 1.0))
+        self.assertEqual(vote([HUGE_A, HUGE_A, HUGE_B], HUGE_B), (HUGE_A, 0.0))  # old: scored 1.0
+
+    def test_regression_values_in_the_same_bucket_vote_together(self):
+        # Old keys were round(v, 9): 18.0000001 and 18 were different groups, so the 7s won.
+        self.assertEqual(vote(["7", "18.0000001", "18", "18.0000002", "7"], "18"), ("18.0000001", 1.0))
+        self.assertEqual(vote(["7", "0.1", "0.1000004", "7", "0.1"], "0.1"), ("0.1", 1.0))
+
+    def test_regression_rounding_neighbours_split(self):
+        # 0.3333335 and 0.3333336 share a bucket (333334) that is not 1/3's (333333); old code scored 1.0.
+        self.assertEqual(vote(["0.3333335", "7", "0.3333336"], "1/3"), ("0.3333335", 0.0))
+
+    def test_regression_text_answers_keep_case(self):
+        # Old key lower-cased and merged 'Paris' with 'paris'.
+        self.assertEqual(vote(["paris", "Paris", "Lyon", "Lyon"], "Paris", key=numeric_key)[1], 0.0)
+        groups = {numeric_key("Paris"), numeric_key("paris")}
+        self.assertEqual(len(groups), 2)
+
+    def test_tie_goes_to_the_first_seen_group_not_the_numeric_rule(self):
+        replies = ["7", "7", "1.1000000", "1.1000018", "1.1000000"]
+        self.assertEqual(vote(replies, "1.1"), ("7", 0.0))
+        self.assertEqual(vote(["1.1000000", "7", "7", "1.1000018", "1.1000000"], "1.1"), ("1.1000000", 1.0))
+        # The reference canonicalizes to 1.100001, which no reply equals: nobody is right.
+        self.assertEqual(vote(replies, "1.1000009"), ("7", 0.0))
+
+    def test_a_blank_first_group_does_not_swallow_equal_numbers(self):
+        for replies in (["", "$18", "18.0"], ["", "18.0", "$18"]):
+            winner, score = vote(replies, "18")
+            self.assertEqual(score, 1.0)
+            self.assertIn(winner, ("$18", "18.0"))
+        self.assertEqual(vote(["", "$18", "18.0"], "18")[0], "$18")
+        self.assertEqual(vote(["", "18.0", "$18"], "18")[0], "18.0")
+
+    def test_blank_majority_wins_and_scores_zero(self):
+        # The guarantee is per key, not "winner is right": a blank majority beats a lone number.
+        self.assertEqual(vote(["", "", "5"], "5"), ("", 0.0))
+
+    def test_invalid_reference_scores_every_winner_zero(self):
+        for ref in ["1/0", "1e999", "", "$"]:
+            with self.subTest(ref=ref):
+                self.assertEqual(vote(["5", "5", "7"], ref), ("5", 0.0))
+
+    def test_gsm8k_integer_answers(self):
+        self.assertEqual(vote(["1,234", "1234", "5"], "1234"), ("1,234", 1.0))
+        self.assertEqual(vote(["-42", "\u221242", "42"], "-42"), ("-42", 1.0))
+        self.assertEqual(vote(["$18", "7", "18.0", "7"], "18"), ("$18", 1.0))
+        self.assertEqual(vote(["7", "$18", "7", "18.0"], "18"), ("7", 0.0))
+
+
+class VoteCostOrder(unittest.TestCase):
+    def test_cost_is_totalled_call_by_call_with_uneven_costs(self):
+        class Tenth:
+            def complete(self, prompt, model, sample=0):
+                return Response("Answer: 1", 1, 1, 0.1)
+
+        ev = Evaluator([Task("a", "1"), Task("b", "1")], Tenth(), [ModelSpec("s", 1, 1)], scorer=numeric_match)
+        call_by_call = 0.0
+        for _ in range(6):
+            call_by_call += 0.1
+        per_task = 0.0
+        for _ in range(2):
+            sub = 0.0
+            for _ in range(3):
+                sub += 0.1
+            per_task += sub
+        self.assertNotEqual(call_by_call, per_task)  # the fixture must tell the two orders apart
+        mean_cost = majority_vote(ev, 0, 3, vote_key=numeric_key)[1]
+        self.assertEqual(mean_cost, call_by_call / 2)
+        self.assertNotEqual(mean_cost, per_task / 2)
