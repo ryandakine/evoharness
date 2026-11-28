@@ -13,6 +13,7 @@ from evoharness import (
     bootstrap_ci,
     majority_vote,
     majority_vote_detail,
+    numeric_key,
     numeric_match,
     paired_bootstrap,
     run_genome,
@@ -59,6 +60,29 @@ class NumericMatch(unittest.TestCase):
         ]:
             with self.subTest(answer=answer, reference=reference):
                 self.assertEqual(numeric_match(answer, reference), expected)
+
+    def test_integer_reference_needs_exact_integer(self):
+        for answer, reference, expected in [
+            ("1000001", "1000000", 0.0), ("5000004", "5000000", 0.0), ("999999", "1000000", 0.0),
+            ("123456789", "123456788", 0.0), ("1000000.5", "1000000", 0.0), ("18.0000001", "18", 0.0),
+            ("-1000001", "-1000000", 0.0), ("1,000,001", "1,000,000", 0.0),
+            ("1000000", "1,000,000", 1.0), ("1e6", "1000000", 1.0), ("0.333333", "1/3", 1.0), ("18.0", "18", 1.0),
+        ]:
+            with self.subTest(answer=answer, reference=reference):
+                self.assertEqual(numeric_match(answer, reference), expected)
+
+    def test_tolerance_for_decimal_references_is_capped_in_absolute_terms(self):
+        self.assertEqual(numeric_match("1000001.5", "1000000.5"), 0.0)
+        self.assertEqual(numeric_match("1000000.5", "1000000.4"), 0.0)
+        self.assertEqual(numeric_match("1000000.5", "1000000.5"), 1.0)
+
+    def test_infinite_reference_does_not_crash(self):
+        # "1e999" parses to inf; int(inf) would raise OverflowError.
+        for answer, reference in [("5", "1e999"), ("1e999", "1e999"), ("1e999", "5")]:
+            with self.subTest(answer=answer, reference=reference):
+                self.assertIn(numeric_match(answer, reference), (0.0, 1.0))
+        self.assertEqual(numeric_match("5", "1e999"), 0.0)
+        numeric_key("1e999")
 
     def test_a_range_is_not_read_as_a_negative_number(self):
         # "3-5" ends in the number 5, not -5.
@@ -276,6 +300,56 @@ class MajorityVoteSamples(unittest.TestCase):
             for s in range(5):
                 total += ev.backend.complete(f"{ev.roles[0]}\n\nTask: {t.prompt}\n", ev.models[1], sample=s).cost
         self.assertEqual(majority_vote(ev, 1, 5)[1], total / len(ev.tasks))
+
+
+class Scripted:
+    """Backend whose reply for sample s is replies[s]."""
+
+    def __init__(self, replies):
+        self.replies = replies
+
+    def complete(self, prompt, model, sample=0):
+        return Response(self.replies[sample], 1, 1, 0.0)
+
+
+def scripted_eval(*replies, ref="18"):
+    return Evaluator([Task("q", ref)], Scripted(list(replies)), [ModelSpec("s", 1, 1)], scorer=numeric_match)
+
+
+class NumericVote(unittest.TestCase):
+    """The scorer is numeric, so the vote must group '$18', '18.00' and '18.0' together."""
+
+    def test_default_grouping_is_raw_strings(self):
+        ev = scripted_eval("Answer: 7", "Answer: $18", "Answer: 7", "Answer: $18.00", "Answer: 18.0")
+        row = majority_vote_detail(ev, 0, 5)[0]
+        self.assertEqual((row.answer, row.score), ("7", 0.0))
+
+    def test_numeric_key_groups_equivalent_formats(self):
+        ev = scripted_eval("Answer: 7", "Answer: $18", "Answer: 7", "Answer: $18.00", "Answer: 18.0")
+        row = majority_vote_detail(ev, 0, 5, vote_key=numeric_key)[0]
+        self.assertEqual((row.answer, row.score), ("$18", 1.0))
+        self.assertEqual(majority_vote(ev, 0, 5, vote_key=numeric_key)[0], 1.0)
+
+    def test_reviews_example_two_dollar_plus_float_beats_two_sevens(self):
+        ev = scripted_eval("Answer: 7", "Answer: $18", "Answer: 7", "Answer: $18", "Answer: 18.0")
+        row = majority_vote_detail(ev, 0, 5, vote_key=numeric_key)[0]
+        self.assertEqual((row.answer, row.score), ("$18", 1.0))
+
+    def test_tie_goes_to_the_first_seen_group(self):
+        ev = scripted_eval("Answer: $18", "Answer: 7", "Answer: 18.0", "Answer: 7")
+        row = majority_vote_detail(ev, 0, 4, vote_key=numeric_key)[0]
+        self.assertEqual((row.answer, row.score), ("$18", 1.0))
+        ev = scripted_eval("Answer: 7", "Answer: $18", "Answer: 7", "Answer: 18.0")
+        row = majority_vote_detail(ev, 0, 4, vote_key=numeric_key)[0]
+        self.assertEqual((row.answer, row.score), ("7", 0.0))
+
+    def test_numeric_key_rows(self):
+        for a, b in [("18", "$18.00"), ("18", "18.0"), ("18", "Answer 18"), ("Paris", "paris"), ("1/3", "0.333333333")]:
+            with self.subTest(a=a, b=b):
+                self.assertEqual(numeric_key(a), numeric_key(b))
+        for a, b in [("7", "18"), ("1000001", "1000000"), ("123456789.5", "123456790"), ("18.5", "18")]:
+            with self.subTest(a=a, b=b):
+                self.assertNotEqual(numeric_key(a), numeric_key(b))
 
 
 class Bootstrap(unittest.TestCase):

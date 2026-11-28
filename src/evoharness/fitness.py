@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 
 from .attribution import Attribution, dag_shapley
@@ -103,8 +103,14 @@ def single_agent(model_idx: int, role_idx: int = 0) -> Genome:
     return Genome([role_idx], [model_idx], set())
 
 
-def _vote(ev: Evaluator, model_idx: int, k: int, sample_base: int) -> tuple[list[TaskScore], float]:
-    """Rows per task, plus the cost totalled call by call (the order majority_vote has always used)."""
+def _vote(ev: Evaluator, model_idx: int, k: int, sample_base: int,
+          vote_key: Callable[[str], Hashable] | None = None) -> tuple[list[TaskScore], float]:
+    """Rows per task, plus the cost totalled call by call (the order majority_vote has always used).
+
+    vote_key=None groups raw answer strings. With a key, answers sharing a key vote together
+    and the first raw answer of the largest group wins (ties: first-seen group). Blank
+    replies are not dropped: they group under their own key and can win, as on the raw path.
+    """
     if k < 1:
         raise ValueError("k must be positive")
     if sample_base < 0:
@@ -119,24 +125,32 @@ def _vote(ev: Evaluator, model_idx: int, k: int, sample_base: int) -> tuple[list
             answers.append(extract_answer(r.text))
             cost, tin, tout = cost + r.cost, tin + r.input_tokens, tout + r.output_tokens
             total += r.cost
-        winner = Counter(answers).most_common(1)[0][0]
+        if vote_key is None:
+            winner = Counter(answers).most_common(1)[0][0]
+        else:
+            groups: dict[Hashable, list[str]] = {}
+            for a in answers:
+                groups.setdefault(vote_key(a), []).append(a)
+            winner = max(groups.values(), key=len)[0]
         seconds = time.perf_counter() - t0
         rows.append(TaskScore(ev.scorer(winner, t.reference), cost, k, tin, tout, seconds, winner))
     return rows, total
 
 
-def majority_vote_detail(ev: Evaluator, model_idx: int, k: int, *, sample_base: int = 0) -> list[TaskScore]:
+def majority_vote_detail(ev: Evaluator, model_idx: int, k: int, *, sample_base: int = 0,
+                         vote_key: Callable[[str], Hashable] | None = None) -> list[TaskScore]:
     """k independent samples of one model per task, majority answer; one TaskScore per task.
 
     Samples sample_base .. sample_base+k-1 are drawn. Give separate runs different
     bases, or a response cache will replay the same votes.
     """
-    return _vote(ev, model_idx, k, sample_base)[0]
+    return _vote(ev, model_idx, k, sample_base, vote_key)[0]
 
 
-def majority_vote(ev: Evaluator, model_idx: int, k: int, *, sample_base: int = 0) -> tuple[float, float]:
+def majority_vote(ev: Evaluator, model_idx: int, k: int, *, sample_base: int = 0,
+                  vote_key: Callable[[str], Hashable] | None = None) -> tuple[float, float]:
     """k independent samples of one model, majority answer. Returns (accuracy, mean cost)."""
-    rows, total = _vote(ev, model_idx, k, sample_base)
+    rows, total = _vote(ev, model_idx, k, sample_base, vote_key)
     acc = 0.0
     for r in rows:
         acc += r.score

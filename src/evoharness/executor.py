@@ -5,10 +5,11 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import math
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,9 +106,12 @@ def _last_number(text: str) -> float | None:
 def numeric_match(answer: str, reference: str, rel_tol: float = 1e-6) -> float:
     """Compare the last number in each string, so '$18.00' matches '18' and '1/2' matches '0.5'.
 
-    A reference with no number falls back to exact_match. Known limits: the LAST
-    number wins ('$18 for 3 days' reads as 3), a time like '3:30' reads as 30, and
-    '50%' is 50, not 0.5. Pass the extracted answer, not a whole reply.
+    An integer reference needs an integer match (absolute 1e-9); rel_tol applies only
+    to non-integer references and is capped at 1e-6 absolute. A reference with no
+    number falls back to exact_match. Known limits: the LAST number wins ('$18 for 3
+    days' reads as 3), a time like '3:30' reads as 30, '50%' is 50, not 0.5, and
+    integers beyond 2**53 lose float precision (they get the capped tolerance).
+    Pass the extracted answer, not a whole reply.
     """
     ref = _last_number(reference)
     if ref is None:
@@ -115,7 +119,24 @@ def numeric_match(answer: str, reference: str, rel_tol: float = 1e-6) -> float:
     got = _last_number(answer)
     if got is None:
         return 0.0
-    return float(abs(got - ref) <= max(rel_tol * max(abs(got), abs(ref)), 1e-9))
+    if math.isfinite(ref) and abs(ref) < 2**53 and ref.is_integer():
+        return float(abs(got - ref) <= 1e-9)
+    return float(abs(got - ref) <= max(min(rel_tol * max(abs(got), abs(ref)), 1e-6), 1e-9))
+
+
+def numeric_key(s: str) -> Hashable:
+    """Vote-grouping key agreeing with numeric_match: '$18.00', '18.0' and 'Answer 18' share one.
+
+    Integral values key as int (so 18 == 18.0 across types, on purpose); other numbers as
+    round(v, 9). Text with no number keys as its normalised words. Integers beyond 2**53
+    are not distinguished from nearby floats.
+    """
+    v = _last_number(s)
+    if v is None:
+        return re.sub(r"\W+", " ", s.lower()).strip()
+    if math.isfinite(v) and abs(v) < 2**53 and v.is_integer():
+        return int(v)
+    return round(v, 9)
 
 
 def _layers(g: Genome, need: set[int]) -> list[list[int]]:

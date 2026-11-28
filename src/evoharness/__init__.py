@@ -2,7 +2,7 @@
 from .attribution import Attribution, dag_shapley, shapley, viable
 from .distribution import DistributionConfig, DistributionResult, GraphDistribution, reinforce_graph
 from .evaluation import HeldOutScore, TaskSplit, evaluate_frozen, split_tasks
-from .executor import AgentError, RunResult, Task, exact_match, extract_answer, numeric_match, run_genome
+from .executor import AgentError, RunResult, Task, exact_match, extract_answer, numeric_key, numeric_match, run_genome
 from .fitness import Evaluator, TaskScore, majority_vote, majority_vote_detail, single_agent
 from .ga import GAConfig, GAResult, evolve
 from .genome import DEFAULT_ROLES, Genome
@@ -31,7 +31,7 @@ __all__ = [
     "RoleSearchResult", "RunResult", "Task", "TaskScore", "TaskSplit", "bootstrap_ci", "dag_shapley",
     "evaluate_frozen",
     "evolve", "exact_match", "extract_answer", "g_decode", "is_transient", "jfk_scores",
-    "majority_vote", "majority_vote_detail", "numeric_match", "optimize_prompts", "paired_bootstrap",
+    "majority_vote", "majority_vote_detail", "numeric_key", "numeric_match", "optimize_prompts", "paired_bootstrap",
     "reinforce_graph", "run_genome", "search_roles",
     "shapley", "single_agent", "split_tasks", "viable", "__version__",
 ]
