@@ -199,13 +199,25 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "18",
+        "title": "WP4 fix v5: bounded memory in canonical_number, test guard at EOF",
+        "description": "Codex r9 findings on 5787ff2",
+        "details": "docs/plans/2026-11-27-wp4-fix-plan-v5.md",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-11-28T04:15:56.997Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-11-28T04:10:54.018Z",
-      "taskCount": 17,
-      "completedCount": 12,
+      "lastModified": "2026-11-28T04:15:56.997Z",
+      "taskCount": 18,
+      "completedCount": 13,
       "tags": [
         "master"
       ]
