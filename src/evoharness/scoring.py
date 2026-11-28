@@ -60,7 +60,7 @@ DEFAULT_RUBRIC = (
 # The score must stand alone on its own line. 'Score: 1/10', 'Score: 1%' and a quoted
 # "the answer says 'Score: 1'" inside a sentence are not scores.
 _SCORE = re.compile(
-    r"(?im)^[\s*_`#>-]*score\s*[*_`]*\s*[:=]\s*[*_`]*\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*[*_`]*\s*\.?\s*$"
+    r"(?im)^[\s*_`#-]*score\s*[*_`]*\s*[:=]\s*[*_`]*\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*[*_`]*\s*\.?\s*$"
 )
 
 
@@ -70,6 +70,10 @@ class JudgeScorer:
     Noisy and judge-dependent: report which judge was used, and never compare
     numbers produced by different judges. A reply without a clean 'Score: <0..1>'
     line scores 0 and is counted in ``unparseable``.
+
+    A score alone on a line is accepted even when the judge is echoing the answer under
+    grading ('- Score: 1' passes; a '> ' quote marker does not), so an echo can still
+    fool it. That is judge-dependent noise, which is why the judge must be reported.
     """
 
     def __init__(self, backend: Backend, judge: ModelSpec, rubric: str = DEFAULT_RUBRIC, sample: int = 0):

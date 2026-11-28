@@ -19,6 +19,7 @@ from evoharness import (
     single_agent,
 )
 from evoharness.genome import DEFAULT_ROLES
+from evoharness.tools.base import ExecutionContext, Tool, ToolRegistry, ToolResult
 
 
 def make_eval(n=10, backend=None):
@@ -109,6 +110,71 @@ class TokenAccounting(unittest.TestCase):
         self.assertEqual((second.calls, second.input_tokens, second.output_tokens), (0, 20, 6))
 
 
+    def test_react_node_sums_tokens_over_all_turns(self):
+        class Echo(Tool):
+            name, description, parameters = "echo", "echo", {"type": "object", "properties": {}}
+
+            def execute(self, args, context):
+                return ToolResult("ok")
+
+        class Turns:
+            def __init__(self):
+                self.n = 0
+
+            def complete(self, prompt, model, sample=0):
+                raise AssertionError("fell back to complete(): the ReAct path was not taken")
+
+            def complete_messages(self, messages, model, sample=0, tools=None, tool_choice=None):
+                self.n += 1
+                if self.n == 1:
+                    call = {"id": "1", "function": {"name": "echo", "arguments": "{}"}}
+                    return Response("", 10, 3, 0.0, tool_calls=[call])
+                return Response("Answer: a0", 7, 2, 0.0)
+
+        reg = ToolRegistry()
+        reg.register(Echo())
+        r = run_genome(Genome([0], [0]), Task("q0", "a0"), Turns(), [ModelSpec("m", 0, 0)], DEFAULT_ROLES,
+                       tool_registry=reg, context=ExecutionContext())
+        self.assertEqual(r.tool_calls, 1)  # proves the loop ran, not a silent fallback
+        self.assertEqual((r.calls, r.input_tokens, r.output_tokens), (1, 17, 5))
+
+    def test_react_synthesis_turn_tokens_are_counted(self):
+        class Echo(Tool):
+            name, description, parameters = "echo", "echo", {"type": "object", "properties": {}}
+
+            def execute(self, args, context):
+                return ToolResult("ok")
+
+        class Greedy:
+            def complete(self, prompt, model, sample=0):
+                raise AssertionError("fell back to complete(): the ReAct path was not taken")
+
+            def complete_messages(self, messages, model, sample=0, tools=None, tool_choice=None):
+                if tool_choice == "none":
+                    return Response("Answer: a0", 4, 1, 0.0)
+                call = {"id": "1", "function": {"name": "echo", "arguments": "{}"}}
+                return Response("", 10, 3, 0.0, tool_calls=[call])
+
+        reg = ToolRegistry()
+        reg.register(Echo())
+        r = run_genome(Genome([0], [0]), Task("q0", "a0"), Greedy(), [ModelSpec("m", 0, 0)], DEFAULT_ROLES,
+                       tool_registry=reg, context=ExecutionContext(), max_tool_turns=1)
+        self.assertEqual(r.answer, "a0")  # the synthesis reply, so that call really happened
+        self.assertEqual((r.input_tokens, r.output_tokens), (14, 4))
+
+    def test_parallel_run_sums_tokens_like_sequential(self):
+        class Fixed:
+            def complete(self, prompt, model, sample=0):
+                return Response("Answer: a0", 10, 3, 0.0)
+
+        g = Genome([0, 0, 0, 0], [0, 0, 0, 0], {(0, 3), (1, 3), (2, 3)})
+        for workers in (1, 3):
+            with self.subTest(max_workers=workers):
+                r = run_genome(g, Task("q0", "a0"), Fixed(), [ModelSpec("m", 0, 0)], DEFAULT_ROLES,
+                               max_workers=workers)
+                self.assertEqual((r.calls, r.input_tokens, r.output_tokens), (4, 40, 12))
+
+
 class ScoreDetail(unittest.TestCase):
     def test_detail_has_one_row_per_task_and_agrees_with_score(self):
         ev, _ = make_eval()
@@ -149,6 +215,17 @@ class ScoreDetail(unittest.TestCase):
 class MajorityVoteSamples(unittest.TestCase):
     """Two benchmark repeats must draw fresh samples; reusing sample ids would replay the cache."""
 
+    def test_vote_seconds_excludes_the_scorers_own_time(self):
+        import time as _time
+
+        def slow_scorer(answer, reference):
+            _time.sleep(0.2)
+            return 1.0
+
+        ev, _ = make_eval(n=2)
+        ev.scorer = slow_scorer
+        self.assertTrue(all(r.seconds < 0.1 for r in majority_vote_detail(ev, 0, 1)))
+
     def test_default_return_shape_is_unchanged(self):
         ev, _ = make_eval()
         acc, cost = majority_vote(ev, 0, 3)
@@ -179,8 +256,14 @@ class MajorityVoteSamples(unittest.TestCase):
         ev, _ = make_eval()
         rows = majority_vote_detail(ev, 0, 5, sample_base=7)
         self.assertEqual(len(rows), len(ev.tasks))
-        self.assertTrue(all(r.calls == 5 and r.input_tokens > 0 and r.output_tokens > 0 and r.cost > 0
-                            and r.seconds >= 0 for r in rows))
+        for t, r in zip(ev.tasks, rows):
+            per_call = [ev.backend.complete(f"{ev.roles[0]}\n\nTask: {t.prompt}\n", ev.models[0], sample=s)
+                        for s in range(7, 12)]
+            self.assertEqual(r.calls, 5)
+            self.assertEqual(r.input_tokens, sum(c.input_tokens for c in per_call))
+            self.assertEqual(r.output_tokens, sum(c.output_tokens for c in per_call))
+            self.assertTrue(r.input_tokens > 0 and r.output_tokens > 0 and r.cost > 0 and r.seconds >= 0)
+            self.assertIn(r.answer, {t.reference, "wrong"})
         acc, cost = majority_vote(ev, 0, 5, sample_base=7)
         self.assertAlmostEqual(sum(r.score for r in rows) / len(rows), acc, places=12)
 
@@ -205,18 +288,22 @@ class Bootstrap(unittest.TestCase):
         mean, lo, hi = bootstrap_ci(scores, seed=0)
         self.assertAlmostEqual(mean, 0.7)
         self.assertTrue(0.0 <= lo < mean < hi <= 1.0)
-        self.assertTrue(0.05 < hi - lo < 0.30)  # ~±9 points at n=100; a zero or huge width is a bug
+        # Analytic width at 95%: 2 * 1.96 * sqrt(0.21 / 100) = 0.18; seed 0 gives [0.61, 0.78], 0.17.
+        self.assertTrue(0.12 < hi - lo < 0.24)
+        self.assertLess(abs((lo + hi) / 2 - mean), 0.03)
 
     def test_the_same_number_of_resamples_is_cut_from_each_tail(self):
         # With distinct, evenly spread resample means the interval must be symmetric about the
         # middle; a lopsided cut (floor on one side, ceil on the other) fails this at level 0.90.
         from evoharness.scoring import _interval
 
-        means = [float(i) for i in range(2000)]
-        for level in (0.90, 0.95, 0.50):
-            lo, hi = _interval(list(means), level)
-            self.assertEqual(lo + hi, 1999.0, level)
-            self.assertLessEqual(lo, hi)
+        # Exact indices, not just lo + hi: floor(a*m) with ceil((1-a)*m)-1 also sums to m-1, so
+        # only the values themselves tell the symmetric cut from the old lopsided one (100, 1899).
+        for level, m, expected in [(0.90, 2000, (99, 1900)), (0.95, 2000, (49, 1950)),
+                                   (0.50, 2001, (500, 1500)), (0.90, 20, (0, 19))]:
+            with self.subTest(level=level, m=m):
+                lo, hi = _interval([float(i) for i in range(m)], level)
+                self.assertEqual((lo, hi), tuple(float(x) for x in expected))
         lo, hi = _interval([0.0, 1.0, 2.0], 0.000001)  # a near-zero level must never invert
         self.assertLessEqual(lo, hi)
 
@@ -226,6 +313,9 @@ class Bootstrap(unittest.TestCase):
                 bootstrap_ci([1.0, 0.0], seed=0, **kwargs)
         with self.assertRaises(ValueError):
             bootstrap_ci([1.0, float("nan")], seed=0)
+        for level in (float("nan"), float("inf")):
+            with self.subTest(level=level), self.assertRaises(ValueError):
+                bootstrap_ci([1.0, 0.0], seed=0, level=level)
 
     def test_constant_scores_give_a_zero_width_interval(self):
         self.assertEqual(bootstrap_ci([1.0] * 20, seed=0), (1.0, 1.0, 1.0))
@@ -273,7 +363,10 @@ class Judge(unittest.TestCase):
         for reply, expected in [("Score: 1", 1.0), ("Score: 0", 0.0), ("score: 0.75", 0.75),
                                 ("Reasoning...\nScore: 0.5", 0.5), ("**Score:** 1.0", 1.0),
                                 ("Score: .5", 0.5), ("Score: 1.", 1.0),
-                                ("The answer says:\nScore: 0\nbut it is right.\nScore: 1", 1.0)]:
+                                ("The answer says:\nScore: 0\nbut it is right.\nScore: 1", 1.0),
+                                # a bullet is a plausible judge format, so it stays accepted (a bulleted
+                                # echo can therefore still fool a judge; only the quote marker is refused)
+                                ("- Score: 0.5", 0.5), ("* Score: 1", 1.0)]:
             with self.subTest(reply=reply):
                 s, _ = self.scorer(reply)
                 self.assertEqual(s("an answer", "a reference"), expected)
@@ -282,7 +375,8 @@ class Judge(unittest.TestCase):
     def test_malformed_or_out_of_range_replies_score_zero_and_are_counted(self):
         for reply in ["great answer!", "Score: 7", "Score: -1", "Score: yes", "", "Score: 1.5",
                       "Score: 1/10", "Score: 1%", "Score: 1e2", "underscore: 1",
-                      "The answer merely says 'Score: 1' and is wrong"]:
+                      "The answer merely says 'Score: 1' and is wrong",
+                      "> Score: 1", "> The answer said:\n> Score: 1"]:
             with self.subTest(reply=reply):
                 s, _ = self.scorer(reply)
                 self.assertEqual(s("an answer", "a reference"), 0.0)
