@@ -1,6 +1,7 @@
 """Fitness and compute-matched baselines."""
 from __future__ import annotations
 
+import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,6 +10,19 @@ from .attribution import Attribution, dag_shapley
 from .executor import Task, exact_match, extract_answer, run_genome
 from .genome import DEFAULT_ROLES, Genome
 from .llm import Backend, ModelSpec
+
+
+@dataclass
+class TaskScore:
+    """One task's result: what it scored and what it cost to get there."""
+
+    score: float
+    cost: float
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    seconds: float
+    answer: str
 
 
 @dataclass
@@ -29,12 +43,22 @@ class Evaluator:
             raise ValueError("max_workers must be positive")
         self.roles = self.roles or DEFAULT_ROLES
 
+    def score_detail(self, g: Genome, sample: int = 0) -> list[TaskScore]:
+        """One TaskScore per task, in task order. Seconds are wall-clock for the run, scoring excluded."""
+        rows = []
+        for t in self.tasks:
+            t0 = time.perf_counter()
+            r = run_genome(g, t, self.backend, self.models, self.roles, sample, max_workers=self.max_workers)
+            seconds = time.perf_counter() - t0  # the run only: a judge scorer's own time is not the swarm's
+            rows.append(TaskScore(self.scorer(r.answer, t.reference), r.cost, r.calls,
+                                  r.input_tokens, r.output_tokens, seconds, r.answer))
+        return rows
+
     def score(self, g: Genome, sample: int = 0) -> tuple[float, float]:
         """Return (accuracy, mean cost per task)."""
         acc = cost = 0.0
-        for t in self.tasks:
-            r = run_genome(g, t, self.backend, self.models, self.roles, sample, max_workers=self.max_workers)
-            acc += self.scorer(r.answer, t.reference)
+        for r in self.score_detail(g, sample):  # running totals in task order: sum() rounds differently
+            acc += r.score
             cost += r.cost
         n = len(self.tasks)
         return acc / n, cost / n
@@ -79,18 +103,41 @@ def single_agent(model_idx: int, role_idx: int = 0) -> Genome:
     return Genome([role_idx], [model_idx], set())
 
 
-def majority_vote(ev: Evaluator, model_idx: int, k: int) -> tuple[float, float]:
-    """k independent samples of one model, majority answer. Returns (accuracy, mean cost)."""
+def _vote(ev: Evaluator, model_idx: int, k: int, sample_base: int) -> tuple[list[TaskScore], float]:
+    """Rows per task, plus the cost totalled call by call (the order majority_vote has always used)."""
     if k < 1:
         raise ValueError("k must be positive")
-    acc = cost = 0.0
+    if sample_base < 0:
+        raise ValueError("sample_base must be nonnegative")
+    rows, total = [], 0.0
     for t in ev.tasks:
-        answers = []
-        for s in range(k):
+        t0 = time.perf_counter()
+        answers, cost, tin, tout = [], 0.0, 0, 0
+        for s in range(sample_base, sample_base + k):
             prompt = f"{ev.roles[0]}\n\nTask: {t.prompt}\n"
             r = ev.backend.complete(prompt, ev.models[model_idx], sample=s)
             answers.append(extract_answer(r.text))
-            cost += r.cost
-        acc += ev.scorer(Counter(answers).most_common(1)[0][0], t.reference)
-    n = len(ev.tasks)
-    return acc / n, cost / n
+            cost, tin, tout = cost + r.cost, tin + r.input_tokens, tout + r.output_tokens
+            total += r.cost
+        winner = Counter(answers).most_common(1)[0][0]
+        seconds = time.perf_counter() - t0
+        rows.append(TaskScore(ev.scorer(winner, t.reference), cost, k, tin, tout, seconds, winner))
+    return rows, total
+
+
+def majority_vote_detail(ev: Evaluator, model_idx: int, k: int, *, sample_base: int = 0) -> list[TaskScore]:
+    """k independent samples of one model per task, majority answer; one TaskScore per task.
+
+    Samples sample_base .. sample_base+k-1 are drawn. Give separate runs different
+    bases, or a response cache will replay the same votes.
+    """
+    return _vote(ev, model_idx, k, sample_base)[0]
+
+
+def majority_vote(ev: Evaluator, model_idx: int, k: int, *, sample_base: int = 0) -> tuple[float, float]:
+    """k independent samples of one model, majority answer. Returns (accuracy, mean cost)."""
+    rows, total = _vote(ev, model_idx, k, sample_base)
+    acc = 0.0
+    for r in rows:
+        acc += r.score
+    return acc / len(rows), total / len(rows)

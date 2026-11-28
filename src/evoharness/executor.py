@@ -36,6 +36,10 @@ class RunResult:
     outputs: dict[int, str] = field(default_factory=dict)
     llm_calls: int = 0
     tool_calls: int = 0
+    # Nominal totals, like cost: a node served from node_cache adds its tokens and cost
+    # here but not to calls, which counts only the calls this run actually made.
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 class AgentError(RuntimeError):
@@ -67,6 +71,51 @@ def exact_match(answer: str, reference: str) -> float:
     def norm(s: str) -> str:
         return re.sub(r"\W+", " ", s.lower()).strip()
     return float(norm(answer) == norm(reference))
+
+
+_PLAIN = r"(?:\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?|\.\d+"
+# A sign counts only at the start of a number: after a digit, letter, '.' or '^' it is a
+# range, a hyphen or an exponent ('3-5' ends in 5; the 2 in 'm^2' is not an answer).
+_NUMBER = re.compile(
+    r"(?<![\w.^])(?P<sign>[-+]?)\$?(?:"
+    r"(?P<whole>\d+)\s+(?P<mnum>\d+)/(?P<mden>\d+)"   # mixed fraction: 2 1/2
+    r"|(?P<num>\d+)/(?P<den>\d+)"                      # simple fraction: 1/2
+    rf"|(?P<plain>{_PLAIN})"
+    r")"
+)
+
+
+def _last_number(text: str) -> float | None:
+    """Value of the last number in the text; fractions and mixed fractions count as one number."""
+    value = None
+    for m in _NUMBER.finditer(text.replace("−", "-")):
+        try:
+            if m["whole"] is not None:
+                v = int(m["whole"]) + int(m["mnum"]) / int(m["mden"])
+            elif m["num"] is not None:
+                v = int(m["num"]) / int(m["den"])
+            else:
+                v = float(m["plain"].replace(",", ""))
+        except (ValueError, ZeroDivisionError, OverflowError):
+            continue
+        value = -v if m["sign"] == "-" else v
+    return value
+
+
+def numeric_match(answer: str, reference: str, rel_tol: float = 1e-6) -> float:
+    """Compare the last number in each string, so '$18.00' matches '18' and '1/2' matches '0.5'.
+
+    A reference with no number falls back to exact_match. Known limits: the LAST
+    number wins ('$18 for 3 days' reads as 3), a time like '3:30' reads as 30, and
+    '50%' is 50, not 0.5. Pass the extracted answer, not a whole reply.
+    """
+    ref = _last_number(reference)
+    if ref is None:
+        return exact_match(answer, reference)
+    got = _last_number(answer)
+    if got is None:
+        return 0.0
+    return float(abs(got - ref) <= max(rel_tol * max(abs(got), abs(ref)), 1e-9))
 
 
 def _layers(g: Genome, need: set[int]) -> list[list[int]]:
@@ -290,6 +339,7 @@ def run_genome(
                 stack.append(p)
     outputs: dict[int, str] = {}
     cost, calls, total_tool_calls = 0.0, 0, 0
+    tokens_in = tokens_out = 0
     ctx_env = context or ExecutionContext()
 
     def call(job: tuple[int, str, ModelSpec]) -> Response:
@@ -340,6 +390,7 @@ def run_genome(
                 r = node_cache[key]
                 outputs[i], cost = r.text, cost + r.cost
                 total_tool_calls += len(r.tool_calls)
+                tokens_in, tokens_out = tokens_in + r.input_tokens, tokens_out + r.output_tokens
             else:
                 jobs.append((i, prompt, model))
         if len(jobs) > 1 and max_workers > 1:
@@ -350,6 +401,7 @@ def run_genome(
         for (i, prompt, model), r in zip(jobs, results):
             calls += 1
             total_tool_calls += len(r.tool_calls)
+            tokens_in, tokens_out = tokens_in + r.input_tokens, tokens_out + r.output_tokens
             if node_cache is not None and i not in mutating_nodes:
                 node_cache[(i, model, sample, prompt)] = r
             outputs[i], cost = r.text, cost + r.cost
@@ -357,4 +409,5 @@ def run_genome(
     return RunResult(
         extract_answer(outputs[g.n - 1]), cost, calls, outputs,
         llm_calls=calls, tool_calls=total_tool_calls,
+        input_tokens=tokens_in, output_tokens=tokens_out,
     )
