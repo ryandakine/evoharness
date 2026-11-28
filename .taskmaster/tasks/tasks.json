@@ -152,13 +152,25 @@
         "dependencies": [],
         "priority": "medium",
         "subtasks": []
+      },
+      {
+        "id": "14",
+        "title": "WP4 fix plan (r3 response)",
+        "description": "Build docs/plans/2026-11-27-wp4-fix-plan.md: exact-index interval test, token/vote tests, drop > from judge score prefix",
+        "details": "See docs/plans/2026-11-27-wp4-fix-plan.md",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-11-28T02:09:34.310Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-11-28T00:10:59.996Z",
-      "taskCount": 13,
-      "completedCount": 9,
+      "lastModified": "2026-11-28T02:09:34.310Z",
+      "taskCount": 14,
+      "completedCount": 10,
       "tags": [
         "master"
       ]
