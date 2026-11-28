@@ -84,13 +84,81 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-11-22T05:35:53.028Z"
+      },
+      {
+        "id": "8",
+        "title": "WP6 docs drift: README test count, pyproject URLs",
+        "description": "Plan docs/plans/2026-11-27-six-fixes.md section WP6. Verify: ruff check, pytest -q.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": [],
+        "updatedAt": "2026-11-27T19:43:52.461Z"
+      },
+      {
+        "id": "9",
+        "title": "WP4 scoring: numeric_match, tokens in RunResult, score_detail, majority_vote sample_base, bootstrap, LLM-judge scorer",
+        "description": "Plan docs/plans/2026-11-27-six-fixes.md section WP4. Offline tests only; score() numbers unchanged.",
+        "details": "",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-11-28T00:10:59.995Z"
+      },
+      {
+        "id": "10",
+        "title": "WP2 mixed-model committee preset + bin/swarm mixed",
+        "description": "Plan docs/plans/2026-11-27-six-fixes.md section WP2. Four entries, judge not a solver, no raw keys, fail fast. Verify on four Ollama models on the rig.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "11",
+        "title": "WP1 benchmark: GSM8K 250 (30 search/20 select/200 test), arms A,B3,B5,C,D,E; runner, results, README section",
+        "description": "Plan docs/plans/2026-11-27-six-fixes.md section WP1. Dev-only headroom decision first; per-arm sample bases; cache namespaced by config+digest; no matched-cost claim. Phase 2 = evolved arm F after A-E are published.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "12",
+        "title": "WP3 bwrap sandbox for BashTool",
+        "description": "Plan docs/plans/2026-11-27-six-fixes.md section WP3. shell=False argv, lazy exec probe, reject / and HOME workspaces, per-node read-only, MCP off when confined, fake-HOME integration tests.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": []
+      },
+      {
+        "id": "13",
+        "title": "WP5 optimizers carry tools; run_genome honors g.tools; task_workers; budget reserve under lock",
+        "description": "Plan docs/plans/2026-11-27-six-fixes.md section WP5. Mutating tools need allow_mutating and are never run in parallel.",
+        "details": "",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-11-22T05:35:53.028Z",
-      "taskCount": 7,
-      "completedCount": 7,
+      "lastModified": "2026-11-28T00:10:59.996Z",
+      "taskCount": 13,
+      "completedCount": 9,
       "tags": [
         "master"
       ]
