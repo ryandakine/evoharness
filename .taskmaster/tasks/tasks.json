@@ -164,13 +164,25 @@
         "priority": "medium",
         "subtasks": [],
         "updatedAt": "2026-11-28T02:09:34.310Z"
+      },
+      {
+        "id": "15",
+        "title": "WP4 fixes F1/F2: numeric_match integer+capped tolerance, numeric_key vote",
+        "description": "Per docs/plans/2026-11-27-wp4-fix-plan-v2.md (Opus r5 GO WITH CHANGES): numeric_match exact for integer refs and capped abs tolerance; numeric_key + vote_key kwarg in majority_vote.",
+        "details": "TDD: tests in tests/test_scoring.py first (red), then executor.py/fitness.py/__init__.py. Run pytest -q and ruff check . F3 lands with WP1 runner.",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "subtasks": [],
+        "updatedAt": "2026-11-28T02:31:11.486Z"
       }
     ],
     "metadata": {
       "version": "1.0.0",
-      "lastModified": "2026-11-28T02:09:34.310Z",
-      "taskCount": 14,
-      "completedCount": 10,
+      "lastModified": "2026-11-28T02:31:11.486Z",
+      "taskCount": 15,
+      "completedCount": 11,
       "tags": [
         "master"
       ]
